@@ -11,8 +11,8 @@ uses
   DateUtils,
   CTypes,
   Windows,
-  Tokenizer_Unit in 'src/tokenizer_unit.pas',
-  Transformer_Unit in 'src/transformer_unit.pas';
+  Tokenizer_Unit,
+  Transformer_Unit;
 
   { Configure console for UTF-8 output }
   procedure ConfigureConsoleForUTF8;

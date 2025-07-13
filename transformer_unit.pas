@@ -790,12 +790,9 @@ begin
       else
       begin
         // Replace %s placeholder in prompt template
-        temp_str := string(tokenizer.prompt_template);
-        temp_str := StringReplace(temp_str, '%s', PChar(@user_prompt[0]), [rfReplaceAll]);
+        temp_str := StringReplace(tokenizer.prompt_template, '%s', PChar(@user_prompt[0]), [rfReplaceAll]);
         StrCopy(@rendered_prompt[0], PChar(temp_str));
       end;
-
-      //writeLn('Prompt: '+temp_str);
 
       // Encode prompt
       Tokenizer.Encode(@rendered_prompt[0], prompt_tokens, num_prompt_tokens);

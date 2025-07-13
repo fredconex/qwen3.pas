@@ -9,8 +9,7 @@
         <Filename Value="qwen3.pas"/>
         <IsPartOfProject Value="True"/>
         <UnitName Value="Qwen3"/>
-        <TopLine Value="105"/>
-        <CursorPos X="36" Y="121"/>
+        <CursorPos X="35" Y="14"/>
         <UsageCount Value="33"/>
         <Loaded Value="True"/>
       </Unit>
@@ -93,20 +92,17 @@
         <Filename Value="src\transformer_unit.pas"/>
         <IsPartOfProject Value="True"/>
         <UnitName Value="Transformer_Unit"/>
-        <EditorIndex Value="2"/>
-        <CursorPos X="27" Y="51"/>
+        <EditorIndex Value="-1"/>
+        <CursorPos X="48" Y="12"/>
         <UsageCount Value="21"/>
-        <Loaded Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="src\Tokenizer_Unit.pas"/>
         <IsPartOfProject Value="True"/>
-        <IsVisibleTab Value="True"/>
-        <EditorIndex Value="1"/>
+        <EditorIndex Value="-1"/>
         <TopLine Value="41"/>
-        <CursorPos Y="61"/>
+        <CursorPos X="33" Y="52"/>
         <UsageCount Value="21"/>
-        <Loaded Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="C:\lazarus\lcl\interfaces\win32\win32winapi.inc"/>
@@ -115,72 +111,18 @@
         <CursorPos X="63" Y="3944"/>
         <UsageCount Value="10"/>
       </Unit>
+      <Unit>
+        <Filename Value="tokenizer_unit.pas"/>
+        <UnitName Value="Tokenizer_Unit"/>
+        <IsVisibleTab Value="True"/>
+        <EditorIndex Value="1"/>
+        <TopLine Value="2"/>
+        <CursorPos X="22" Y="22"/>
+        <UsageCount Value="10"/>
+        <Loaded Value="True"/>
+      </Unit>
     </Units>
-    <JumpHistory HistoryIndex="29">
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="26" Column="54" TopLine="12"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="32" Column="7" TopLine="7"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="4" Column="30"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="34" Column="20" TopLine="14"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="58" Column="16" TopLine="31"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="104" Column="54" TopLine="95"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="659" Column="24" TopLine="644"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="693" Column="27" TopLine="673"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="802" Column="24" TopLine="782"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="857" Column="32" TopLine="828"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="58" Column="87" TopLine="43"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="106" Column="20" TopLine="91"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="104" Column="54" TopLine="95"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="48" Column="20" TopLine="22"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="436" Column="45" TopLine="424"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="445" Column="47" TopLine="430"/>
-      </Position>
+    <JumpHistory HistoryIndex="4">
       <Position>
         <Filename Value="qwen3.pas"/>
         <Caret Line="103" Column="46" TopLine="91"/>
@@ -194,48 +136,12 @@
         <Caret Line="52" Column="3" TopLine="40"/>
       </Position>
       <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="456" Column="16" TopLine="430"/>
+        <Filename Value="qwen3.pas"/>
+        <Caret Line="14" Column="35"/>
       </Position>
       <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="38" Column="31" TopLine="26"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="445" Column="20" TopLine="421"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="455" Column="20" TopLine="422"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="461" Column="19" TopLine="434"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="483" Column="33" TopLine="450"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="441" Column="48" TopLine="426"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="57" Column="58" TopLine="41"/>
-      </Position>
-      <Position>
-        <Filename Value="src\Tokenizer_Unit.pas"/>
-        <Caret Line="61" TopLine="41"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="688" Column="30" TopLine="668"/>
-      </Position>
-      <Position>
-        <Filename Value="src\transformer_unit.pas"/>
-        <Caret Line="809" Column="46" TopLine="798"/>
+        <Filename Value="tokenizer_unit.pas"/>
+        <Caret Line="22" Column="23"/>
       </Position>
     </JumpHistory>
     <RunParams>
