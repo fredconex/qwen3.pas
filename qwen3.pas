@@ -7,9 +7,7 @@ program Qwen3;
 uses
   SysUtils,
   Classes,
-  Math,
   DateUtils,
-  CTypes,
   Windows,
   Tokenizer_Unit,
   Transformer_Unit;
@@ -97,19 +95,10 @@ begin
   if (topp < 0) or (topp > 1.0) then
     topp := 0.9;
 
-  // Build transformer
-  transformer.Build(checkpoint_path, ctx_length);
-
-  writeln('BuildTransformer.');
-
-  // Build tokenizer
+  // Build
+  Transformer.Build(checkpoint_path, ctx_length);
   Tokenizer.Build(checkpoint_path, transformer.config.vocab_size, enable_thinking = 1);
-
-  writeln('BuildTokenizer.');
-
-  // Build sampler
   Sampler.build(transformer.config.vocab_size, temperature, topp, rng_seed);
-  writeln('BuildSampler.');
 
 
   // Print model info if no prompt

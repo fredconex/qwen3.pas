@@ -24,6 +24,7 @@ type
 
     procedure Dequantize(x: PSingle; n: longint);
     procedure Quantize(x: PSingle; n: longint);
+    procedure MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
   end;
 
   { Array of quantized tensors with utility methods }
@@ -42,7 +43,6 @@ type
 function SafeGetMem(Size: PtrUInt): Pointer;
 
 { Matrix multiplication for quantized tensors }
-procedure MatMul(xout: PSingle; const x, w: TInt8QuantizedTensor; n, d: longint);
 
 implementation
 
@@ -177,7 +177,7 @@ begin
 end;
 
 { Matrix multiplication }
-procedure MatMul(xout: PSingle; const x, w: TInt8QuantizedTensor; n, d: longint);
+procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
 var
   i, j, k, groups: longint;
   val: single;
@@ -192,8 +192,8 @@ begin
     val := 0;
     w_base := w.q + (i * n);
     w_scales := w.s + (i * groups);
-    x_base := x.q;
-    x_scales := x.s;
+    x_base := self.q;
+    x_scales := self.s;
     for j := 0 to groups - 1 do
     begin
       ival := 0;

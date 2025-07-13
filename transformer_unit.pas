@@ -334,9 +334,9 @@ begin
 
     // QKV matmuls
     s^.xq.Quantize(s^.xb, p^.dim);
-    MatMul(s^.q, s^.xq, w^.wq.GetTensor(l), p^.dim, all_heads_dim);
-    MatMul(s^.k, s^.xq, w^.wk.GetTensor(l), p^.dim, kv_dim);
-    MatMul(s^.v, s^.xq, w^.wv.GetTensor(l), p^.dim, kv_dim);
+    s^.xq.MatMul(s^.q, w^.wq.GetTensor(l), p^.dim, all_heads_dim);
+    s^.xq.MatMul(s^.k, w^.wk.GetTensor(l), p^.dim, kv_dim);
+    s^.xq.MatMul(s^.v, w^.wv.GetTensor(l), p^.dim, kv_dim);
 
     // Q-RMSNorm + rotate each query head
     for h := 0 to p^.n_heads - 1 do
@@ -409,7 +409,7 @@ begin
 
     // Final attention matmul
     s^.xq.Quantize(s^.xb, all_heads_dim);
-    MatMul(s^.xb, s^.xq, w^.wo.GetTensor(l), all_heads_dim, p^.dim);
+    s^.xq.MatMul(s^.xb, w^.wo.GetTensor(l), all_heads_dim, p^.dim);
 
     // Residual connection
     for i := 0 to p^.dim - 1 do
@@ -420,8 +420,8 @@ begin
 
     // FFN
     s^.xq.Quantize(s^.xb, p^.dim);
-    MatMul(s^.hb, s^.xq, w^.w1.GetTensor(l), p^.dim, p^.hidden_dim);
-    MatMul(s^.hb2, s^.xq, w^.w3.GetTensor(l), p^.dim, p^.hidden_dim);
+    s^.xq.MatMul(s^.hb, w^.w1.GetTensor(l), p^.dim, p^.hidden_dim);
+    s^.xq.MatMul(s^.hb2, w^.w3.GetTensor(l), p^.dim, p^.hidden_dim);
 
     // SwiGLU
     for i := 0 to p^.hidden_dim - 1 do
@@ -432,7 +432,7 @@ begin
 
     // Final FFN matmul
     s^.hq.Quantize(s^.hb, p^.hidden_dim);
-    MatMul(s^.xb, s^.hq, w^.w2.GetTensor(l), p^.hidden_dim, p^.dim);
+    s^.hq.MatMul(s^.xb, w^.w2.GetTensor(l), p^.hidden_dim, p^.dim);
 
     // Residual connection
     for i := 0 to p^.dim - 1 do
@@ -444,7 +444,7 @@ begin
 
   // Classifier
   s^.xq.Quantize(s^.x, p^.dim);
-  MatMul(s^.logits, s^.xq, w^.wcls^, p^.dim, p^.vocab_size);
+  s^.xq.MatMul(s^.logits, w^.wcls^, p^.dim, p^.vocab_size);
 
   Result := s^.logits;
 end;
