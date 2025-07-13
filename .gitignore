@@ -1,0 +1,14 @@
+backup/core.pas
+backup/qwen3.lpi
+backup/qwen3.lps
+backup/qwen3.pas
+lib/x86_64-win64/qwen3.compiled
+lib/x86_64-win64/qwen3.o
+models/Qwen3-0.6B.bin
+models/Qwen3-0.6B.bin.tokenizer
+models/Qwen3-1.7B.bin
+models/Qwen3-1.7B.bin.tokenizer
+models/Qwen3-4B.bin
+models/Qwen3-4B.bin.tokenizer
+__pycache__/model.cpython-310.pyc
+qwen3.exe

@@ -1,10 +1,7 @@
 { Inference for Qwen-3 Transformer model in FreePascal, int8 quantized forward pass }
-
 program Qwen3;
 
 {$mode objfpc}{$H+}
-{$align 32}
-{$ASMMODE intel}
 
 uses
   SysUtils,
@@ -23,7 +20,7 @@ type
 
   TQuantizedTensor = record
     q: PInt8;    // quantized values (int8)
-    s: PSingle;      // scaling factors
+    s: PSingle;  // scaling factors
   end;
 
   { Configuration structure }
@@ -123,9 +120,7 @@ var
   { Configure console for UTF-8 output }
   procedure ConfigureConsoleForUTF8;
   begin
-    // Set console output code page to UTF-8
     SetConsoleOutputCP(CP_UTF8);
-    // Set console input code page to UTF-8
     SetConsoleCP(CP_UTF8);
   end;
 
@@ -287,8 +282,7 @@ var
   end;
 
   { Read checkpoint }
-  procedure ReadCheckpoint(checkpoint: string; var config: TConfig; var weights: TTransformerWeights; var Data: Pointer;
-  var file_size: int64; ctx_length: longint);
+  procedure ReadCheckpoint(checkpoint: string; var config: TConfig; var weights: TTransformerWeights; var Data: Pointer; var file_size: int64; ctx_length: longint);
   var
     fs: TFileStream;
     weights_ptr: Pointer;
@@ -368,11 +362,11 @@ var
   procedure MatMul(xout: PSingle; const x, w: TQuantizedTensor; n, d: longint);
   var
     i, j, k, groups: longint;
-    val: Single;
+    val: single;
     ival: longint;
-    x_base, w_base: ^ShortInt;
+    x_base, w_base: ^shortint;
     x_scales, w_scales: PSingle;
-    group_scale: Single;
+    group_scale: single;
   begin
     groups := n div GS;
     for i := 0 to d - 1 do
@@ -593,16 +587,18 @@ var
     i: integer;
   begin
     FillChar(out_template, SizeOf(out_template), 0);
-    
+
     // Hard-coded templates based on settings
     if with_system_prompt then
     begin
       if enable_thinking then
         // Template: with-system-and-thinking
-        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>assistant' + #10
+        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 +
+          '<|im_end|>' + #10 + '<|im_start|>assistant' + #10
       else
         // Template: with-system
-        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>assistant' + #10 + '<think>' + #10 + #10 + '</think>' + #10 + #10
+        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 +
+          '<|im_end|>' + #10 + '<|im_start|>assistant' + #10 + '<think>' + #10 + #10 + '</think>' + #10 + #10;
     end
     else
     begin
@@ -611,7 +607,7 @@ var
         template_content := '<|im_start|>user' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>assistant' + #10
       else
         // Template: basic
-        template_content := '<|im_start|>user' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>assistant' + #10 + '<think>' + #10 + #10 + '</think>' + #10 + #10
+        template_content := '<|im_start|>user' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>assistant' + #10 + '<think>' + #10 + #10 + '</think>' + #10 + #10;
     end;
 
     // Copy content to template array
@@ -623,9 +619,9 @@ var
   var
     tokenizer_path: string;
     f: file;
-    x : longint = 0;
+    x: longint = 0;
     len: longint = 0;
-    i : longint;
+    i: longint;
   begin
     tokenizer_path := checkpoint_path + '.tokenizer';
     t.vocab_size := vocab_size;
@@ -672,7 +668,7 @@ var
   begin
     pivot := (probindex + high)^.prob;
     i := low - 1;
-    
+
     for j := low to high - 1 do
     begin
       if (probindex + j)^.prob >= pivot then
@@ -683,11 +679,11 @@ var
         (probindex + j)^ := temp;
       end;
     end;
-    
+
     temp := (probindex + i + 1)^;
     (probindex + i + 1)^ := (probindex + high)^;
     (probindex + high)^ := temp;
-    
+
     Result := i + 1;
   end;
 
@@ -878,7 +874,7 @@ var
     str_buffer: pchar;
     special_token: array[0..64] of char = '';
     c: pchar;
-    id : longint = 0;
+    id: longint = 0;
     found_special_token: longint;
     end_of_token_pos, k: longint;
     best_score: single;
@@ -1080,15 +1076,13 @@ var
     time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
     tokens_per_second := tokens_generated / total_time;
 
-    WriteLn;
-    WriteLn('--- Generation Statistics ---');
-    WriteLn('Prompt tokens: ', num_prompt_tokens);
-    WriteLn('Generated tokens: ', tokens_generated);
-    WriteLn('Total tokens: ', num_prompt_tokens + tokens_generated);
-    WriteLn('Time to first token: ', time_to_first_token: 0: 3, 's');
-    WriteLn('Total generation time: ', total_time: 0: 3, 's');
-    WriteLn('Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
-    WriteLn('---------------------------');
+    WriteLn('--- Response Statistics ---');
+    WriteLn('Prompt tokens:', num_prompt_tokens,
+      ' | Generated tokens: ', tokens_generated,
+      ' | Total tokens: ', num_prompt_tokens + tokens_generated,
+      ' | Time to first token: ', time_to_first_token: 0: 3,
+      's | Total response time: ', total_time: 0: 3,
+      's | Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
 
     FreeMem(prompt_tokens);
   end;
@@ -1197,15 +1191,13 @@ var
             time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
             tokens_per_second := tokens_generated / total_time;
 
-            WriteLn;
             WriteLn('--- Response Statistics ---');
-            WriteLn('Prompt tokens: ', num_prompt_tokens);
-            WriteLn('Generated tokens: ', tokens_generated);
-            WriteLn('Total tokens: ', num_prompt_tokens + tokens_generated);
-            WriteLn('Time to first token: ', time_to_first_token: 0: 3, 's');
-            WriteLn('Total response time: ', total_time: 0: 3, 's');
-            WriteLn('Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
-            WriteLn('-------------------------');
+            WriteLn('Prompt tokens:', num_prompt_tokens,
+              ' | Generated tokens: ', tokens_generated,
+              ' | Total tokens: ', num_prompt_tokens + tokens_generated,
+              ' | Time to first token: ', time_to_first_token: 0: 3,
+              's | Total response time: ', total_time: 0: 3,
+              's | Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
           end;
 
           user_turn := 1;
