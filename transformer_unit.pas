@@ -88,11 +88,7 @@ type
     procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
   end;
 
-
-
 implementation
-
-
 
 { Memory map weights with improved structure and readability }
 procedure MapWeightsToMemory(var Weights: TTransformerWeights; const Config: TConfig; var DataPtr: Pointer);
@@ -298,25 +294,158 @@ begin
   FreeRunState(self.state);
 end;
 
+{ Helper function to apply rotary positional embeddings }
+procedure ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim: longint; const pos: longint);
+var
+  j: longint;
+  freq, cos_freq, sin_freq, x_val, y_val: single;
+begin
+  for j := 0 to (head_dim div 2) - 1 do
+  begin
+    freq := Power(1e6, -j / (head_dim / 2));
+    cos_freq := Cos(pos * freq);
+    sin_freq := Sin(pos * freq);
+
+    x_val := (ptr + j)^;
+    y_val := (ptr + j + head_dim div 2)^;
+
+    (ptr + j)^ := x_val * cos_freq - y_val * sin_freq;
+    (ptr + j + head_dim div 2)^ := x_val * sin_freq + y_val * cos_freq;
+  end;
+end;
+
+{ Helper function to process attention layer }
+procedure ProcessAttentionLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, pos: longint);
+var
+  kv_dim, kv_mul, all_heads_dim: longint;
+  loff: QWord;
+  h, t, i: longint;
+  q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
+  score: single;
+begin
+  kv_dim := p.n_kv_heads * p.head_dim;
+  kv_mul := p.n_heads div p.n_kv_heads;
+  all_heads_dim := p.n_heads * p.head_dim;
+  loff := l * QWord(p.seq_len) * kv_dim;
+
+  s.k := s.key_cache + loff + pos * kv_dim;
+  s.v := s.value_cache + loff + pos * kv_dim;
+
+  // Attention RMS norm
+  RMSNorm(s.xb, s.x, w.rms_att_weight + l * p.dim, p.dim);
+
+  // QKV matmuls
+  s.xq.Quantize(s.xb, p.dim);
+  s.xq.MatMul(s.q, w.wq.GetTensor(l), p.dim, all_heads_dim);
+  s.xq.MatMul(s.k, w.wk.GetTensor(l), p.dim, kv_dim);
+  s.xq.MatMul(s.v, w.wv.GetTensor(l), p.dim, kv_dim);
+
+  // Q-RMSNorm + rotate each query head
+  for h := 0 to p.n_heads - 1 do
+  begin
+    q_ptr := s.q + h * p.head_dim;
+    RMSNorm(q_ptr, q_ptr, w.q_norm_weights + l * p.head_dim, p.head_dim);
+    ApplyRotaryEmbeddings(q_ptr, p.head_dim, pos);
+  end;
+
+  // K-RMSNorm + rotate each key head
+  for h := 0 to p.n_kv_heads - 1 do
+  begin
+    k_ptr := s.k + h * p.head_dim;
+    RMSNorm(k_ptr, k_ptr, w.k_norm_weights + l * p.head_dim, p.head_dim);
+    ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
+  end;
+
+  // Multihead attention
+  for h := 0 to p.n_heads - 1 do
+  begin
+    q_ptr := s.q + h * p.head_dim;
+
+    for t := 0 to pos do
+    begin
+      k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
+
+      score := 0;
+      for i := 0 to p.head_dim - 1 do
+        score := score + (q_ptr + i)^ * (k_ptr + i)^;
+
+      (s.att + h * p.seq_len + t)^ := score / Sqrt(p.head_dim);
+    end;
+
+    Softmax(s.att + h * p.seq_len, pos + 1);
+
+    xb_ptr := s.xb + h * p.head_dim;
+    FillChar(xb_ptr^, p.head_dim * SizeOf(single), 0);
+
+    for t := 0 to pos do
+    begin
+      v_ptr := s.value_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
+      for i := 0 to p.head_dim - 1 do
+        (xb_ptr + i)^ := (xb_ptr + i)^ + (s.att + h * p.seq_len + t)^ * (v_ptr + i)^;
+    end;
+  end;
+
+  // Final attention matmul
+  s.xq.Quantize(s.xb, all_heads_dim);
+  s.xq.MatMul(s.xb, w.wo.GetTensor(l), all_heads_dim, p.dim);
+end;
+
+{ Helper function to process feed-forward network layer }
+procedure ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l: longint);
+var
+  i: longint;
+  sigmoid_val: single;
+begin
+  // FFN RMS norm
+  RMSNorm(s.xb, s.x, w.rms_ffn_weight + l * p.dim, p.dim);
+
+  // FFN
+  s.xq.Quantize(s.xb, p.dim);
+  s.xq.MatMul(s.hb, w.w1.GetTensor(l), p.dim, p.hidden_dim);
+  s.xq.MatMul(s.hb2, w.w3.GetTensor(l), p.dim, p.hidden_dim);
+
+  // SwiGLU
+  for i := 0 to p.hidden_dim - 1 do
+  begin
+    sigmoid_val := 1.0 / (1.0 + Exp(-(s.hb + i)^));
+    (s.hb + i)^ := (s.hb + i)^ * sigmoid_val * (s.hb2 + i)^;
+  end;
+
+  // Final FFN matmul
+  s.hq.Quantize(s.hb, p.hidden_dim);
+  s.hq.MatMul(s.xb, w.w2.GetTensor(l), p.hidden_dim, p.dim);
+end;
+
+{ Helper function to apply residual connections }
+procedure ApplyResidualConnection(const x, xb: PSingle; const dim: longint);
+var
+  i: longint;
+begin
+  for i := 0 to dim - 1 do
+    (x + i)^ := (x + i)^ + (xb + i)^;
+end;
+
+{ Helper function to process final layer }
+procedure ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig);
+begin
+  // Final RMS norm
+  RMSNorm(s.x, s.x, w.rms_final_weight, p.dim);
+
+  // Classifier
+  s.xq.Quantize(s.x, p.dim);
+  s.xq.MatMul(s.logits, w.wcls^, p.dim, p.vocab_size);
+end;
+
 function TTransformer.Forward(token: longint; pos: longint): PSingle;
 var
   p: ^TConfig;
   w: ^TTransformerWeights;
   s: ^TRunState;
-  kv_dim, kv_mul, all_heads_dim: longint;
-  l, h, i, j, t: longint;
-  loff: QWord;
-  q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
-  freq, cos_freq, sin_freq, x_val, y_val: single;
-  score: single;
-  sigmoid_val: single;
+  l: longint;
 begin
   p := @self.config;
   w := @self.weights;
   s := @self.state;
-  kv_dim := p^.n_kv_heads * p^.head_dim;
-  kv_mul := p^.n_heads div p^.n_kv_heads;
-  all_heads_dim := p^.n_heads * p^.head_dim;
 
   // Copy token embedding
   Move((w^.token_embedding_table + token * p^.dim)^, s^.x^, p^.dim * SizeOf(single));
@@ -324,127 +453,21 @@ begin
   // Forward through all layers
   for l := 0 to p^.n_layers - 1 do
   begin
-    loff := l * QWord(p^.seq_len) * kv_dim;
+    // Process attention layer
+    ProcessAttentionLayer(s^, w^, p^, l, pos);
+    
+    // Apply residual connection after attention
+    ApplyResidualConnection(s^.x, s^.xb, p^.dim);
 
-    s^.k := s^.key_cache + loff + pos * kv_dim;
-    s^.v := s^.value_cache + loff + pos * kv_dim;
-
-    // Attention RMS norm
-    RMSNorm(s^.xb, s^.x, w^.rms_att_weight + l * p^.dim, p^.dim);
-
-    // QKV matmuls
-    s^.xq.Quantize(s^.xb, p^.dim);
-    s^.xq.MatMul(s^.q, w^.wq.GetTensor(l), p^.dim, all_heads_dim);
-    s^.xq.MatMul(s^.k, w^.wk.GetTensor(l), p^.dim, kv_dim);
-    s^.xq.MatMul(s^.v, w^.wv.GetTensor(l), p^.dim, kv_dim);
-
-    // Q-RMSNorm + rotate each query head
-    for h := 0 to p^.n_heads - 1 do
-    begin
-      q_ptr := s^.q + h * p^.head_dim;
-
-      RMSNorm(q_ptr, q_ptr, w^.q_norm_weights + l * p^.head_dim, p^.head_dim);
-      for j := 0 to (p^.head_dim div 2) - 1 do
-      begin
-        freq := Power(1e6, -j / (p^.head_dim / 2));
-        cos_freq := Cos(pos * freq);
-        sin_freq := Sin(pos * freq);
-
-        x_val := (q_ptr + j)^;
-        y_val := (q_ptr + j + p^.head_dim div 2)^;
-
-        (q_ptr + j)^ := x_val * cos_freq - y_val * sin_freq;
-        (q_ptr + j + p^.head_dim div 2)^ := x_val * sin_freq + y_val * cos_freq;
-      end;
-    end;
-
-    // K-RMSNorm + rotate each key head
-    for h := 0 to p^.n_kv_heads - 1 do
-    begin
-      k_ptr := s^.k + h * p^.head_dim;
-
-      RMSNorm(k_ptr, k_ptr, w^.k_norm_weights + l * p^.head_dim, p^.head_dim);
-      for j := 0 to (p^.head_dim div 2) - 1 do
-      begin
-        freq := Power(1e6, -j / (p^.head_dim / 2));
-        cos_freq := Cos(pos * freq);
-        sin_freq := Sin(pos * freq);
-
-        x_val := (k_ptr + j)^;
-        y_val := (k_ptr + j + p^.head_dim div 2)^;
-
-        (k_ptr + j)^ := x_val * cos_freq - y_val * sin_freq;
-        (k_ptr + j + p^.head_dim div 2)^ := x_val * sin_freq + y_val * cos_freq;
-      end;
-    end;
-
-    // Multihead attention
-    for h := 0 to p^.n_heads - 1 do
-    begin
-      q_ptr := s^.q + h * p^.head_dim;
-
-      for t := 0 to pos do
-      begin
-        k_ptr := s^.key_cache + loff + t * kv_dim + (h div kv_mul) * p^.head_dim;
-
-        score := 0;
-        for i := 0 to p^.head_dim - 1 do
-          score := score + (q_ptr + i)^ * (k_ptr + i)^;
-
-        (s^.att + h * p^.seq_len + t)^ := score / Sqrt(p^.head_dim);
-      end;
-
-      Softmax(s^.att + h * p^.seq_len, pos + 1);
-
-      xb_ptr := s^.xb + h * p^.head_dim;
-      FillChar(xb_ptr^, p^.head_dim * SizeOf(single), 0);
-
-      for t := 0 to pos do
-      begin
-        v_ptr := s^.value_cache + loff + t * kv_dim + (h div kv_mul) * p^.head_dim;
-        for i := 0 to p^.head_dim - 1 do
-          (xb_ptr + i)^ := (xb_ptr + i)^ + (s^.att + h * p^.seq_len + t)^ * (v_ptr + i)^;
-      end;
-    end;
-
-    // Final attention matmul
-    s^.xq.Quantize(s^.xb, all_heads_dim);
-    s^.xq.MatMul(s^.xb, w^.wo.GetTensor(l), all_heads_dim, p^.dim);
-
-    // Residual connection
-    for i := 0 to p^.dim - 1 do
-      (s^.x + i)^ := (s^.x + i)^ + (s^.xb + i)^;
-
-    // FFN RMS norm
-    RMSNorm(s^.xb, s^.x, w^.rms_ffn_weight + l * p^.dim, p^.dim);
-
-    // FFN
-    s^.xq.Quantize(s^.xb, p^.dim);
-    s^.xq.MatMul(s^.hb, w^.w1.GetTensor(l), p^.dim, p^.hidden_dim);
-    s^.xq.MatMul(s^.hb2, w^.w3.GetTensor(l), p^.dim, p^.hidden_dim);
-
-    // SwiGLU
-    for i := 0 to p^.hidden_dim - 1 do
-    begin
-      sigmoid_val := 1.0 / (1.0 + Exp(-(s^.hb + i)^));
-      (s^.hb + i)^ := (s^.hb + i)^ * sigmoid_val * (s^.hb2 + i)^;
-    end;
-
-    // Final FFN matmul
-    s^.hq.Quantize(s^.hb, p^.hidden_dim);
-    s^.hq.MatMul(s^.xb, w^.w2.GetTensor(l), p^.hidden_dim, p^.dim);
-
-    // Residual connection
-    for i := 0 to p^.dim - 1 do
-      (s^.x + i)^ := (s^.x + i)^ + (s^.xb + i)^;
+    // Process feed-forward network layer
+    ProcessFFNLayer(s^, w^, p^, l);
+    
+    // Apply residual connection after FFN
+    ApplyResidualConnection(s^.x, s^.xb, p^.dim);
   end;
 
-  // Final RMS norm
-  RMSNorm(s^.x, s^.x, w^.rms_final_weight, p^.dim);
-
-  // Classifier
-  s^.xq.Quantize(s^.x, p^.dim);
-  s^.xq.MatMul(s^.logits, w^.wcls^, p^.dim, p^.vocab_size);
+  // Process final layer
+  ProcessFinalLayer(s^, w^, p^);
 
   Result := s^.logits;
 end;
