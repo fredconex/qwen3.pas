@@ -2,6 +2,7 @@
 program Qwen3;
 
 {$mode objfpc}{$H+}
+{$modeswitch advancedrecords}
 
 uses
   SysUtils,
@@ -21,6 +22,9 @@ type
   TQuantizedTensor = record
     q: PInt8;    // quantized values (int8)
     s: PSingle;  // scaling factors
+
+    procedure Dequantize(x: PSingle; n: longint);
+    procedure Quantize(x: PSingle; n: longint);
   end;
 
   { Configuration structure }
@@ -117,6 +121,49 @@ type
 var
   GS: longint = 0; // Global group size for quantization
 
+  { TQuantizedTensor method implementations }
+  procedure TQuantizedTensor.Dequantize(x: PSingle; n: longint);
+  var
+    i: longint;
+  begin
+    for i := 0 to n - 1 do
+      (x + i)^ := (self.q + i)^ * (self.s + (i div GS))^;
+  end;
+
+  procedure TQuantizedTensor.Quantize(x: PSingle; n: longint);
+  var
+    group, i: longint;
+    wmax, val, scale, quant_value: single;
+    quantized: shortint;
+  begin
+    for group := 0 to (n div GS) - 1 do
+    begin
+      // Find max absolute value in current group
+      wmax := 0;
+      for i := 0 to GS - 1 do
+      begin
+        val := Abs((x + group * GS + i)^);
+        if val > wmax then
+          wmax := val;
+      end;
+
+      // Calculate scaling factor
+      scale := wmax / 127.0;
+      (self.s + group)^ := scale;
+
+      // Quantize values
+      for i := 0 to GS - 1 do
+      begin
+        if scale > 0 then
+          quant_value := (x + group * GS + i)^ / scale
+        else
+          quant_value := 0;
+        quantized := Round(quant_value);
+        (self.q + group * GS + i)^ := quantized;
+      end;
+    end;
+  end;
+
   { Configure console for UTF-8 output }
   procedure ConfigureConsoleForUTF8;
   begin
@@ -136,106 +183,115 @@ var
     FillChar(Result^, Size, 0);
   end;
 
-  { Quantization functions }
-  procedure Dequantize(var qx: TQuantizedTensor; x: PSingle; n: longint);
-  var
-    i: longint;
-  begin
-    for i := 0 to n - 1 do
-      (x + i)^ := (qx.q + i)^ * (qx.s + (i div GS))^;
-  end;
 
-  procedure Quantize(var qx: TQuantizedTensor; x: PSingle; n: longint);
+
+  { Initialize array of quantized tensors with better memory management }
+  function CreateQuantizedTensors(var DataPtr: Pointer; TensorCount: integer; ElementsPerTensor: integer): PQuantizedTensor;
   var
-    group, i: longint;
-    wmax, val, scale, quant_value: single;
-    quantized: shortint;
+    TensorArray: PQuantizedTensor;
+    CurrentPtr: pbyte;
+    i: integer;
+    QuantizedDataSize: integer;
+    ScaleDataSize: integer;
   begin
-    for group := 0 to (n div GS) - 1 do
+    // Allocate memory for tensor array
+    GetMem(TensorArray, TensorCount * SizeOf(TQuantizedTensor));
+
+    CurrentPtr := pbyte(DataPtr);
+    QuantizedDataSize := ElementsPerTensor * SizeOf(shortint);
+    ScaleDataSize := (ElementsPerTensor div GS) * SizeOf(single);
+
+    // Initialize each tensor in the array
+    for i := 0 to TensorCount - 1 do
     begin
-      // Find max absolute value in current group
-      wmax := 0;
-      for i := 0 to GS - 1 do
-      begin
-        val := Abs((x + group * GS + i)^);
-        if val > wmax then
-          wmax := val;
-      end;
+      // Set quantized data pointer for tensor i
+      (TensorArray + i)^.q := PShortInt(CurrentPtr);
+      Inc(CurrentPtr, QuantizedDataSize);
 
-      // Calculate scaling factor
-      scale := wmax / 127.0;
-      (qx.s + group)^ := scale;
-
-      // Quantize values
-      for i := 0 to GS - 1 do
-      begin
-        if scale > 0 then
-          quant_value := (x + group * GS + i)^ / scale
-        else
-          quant_value := 0;
-        quantized := Round(quant_value);
-        (qx.q + group * GS + i)^ := quantized;
-      end;
-    end;
-  end;
-
-  { Initialize quantized tensors }
-  function InitQuantizedTensors(var ptr: Pointer; n: longint; size_each: longint): PQuantizedTensor;
-  var
-    res: PQuantizedTensor;
-    i: longint;
-  begin
-    GetMem(res, n * SizeOf(TQuantizedTensor));
-
-    for i := 0 to n - 1 do
-    begin
-      (res + i)^.q := PShortInt(ptr);
-      ptr := PShortInt(ptr) + size_each;
-      (res + i)^.s := PSingle(ptr);
-      ptr := PSingle(ptr) + (size_each div GS);
+      // Set scale data pointer for tensor i
+      (TensorArray + i)^.s := PSingle(CurrentPtr);
+      Inc(CurrentPtr, ScaleDataSize);
     end;
 
-    Result := res;
+    // Update the input pointer to point past all processed data
+    DataPtr := CurrentPtr;
+    Result := TensorArray;
   end;
 
-  { Memory map weights }
-  procedure MemoryMapWeights(var w: TTransformerWeights; var p: TConfig; ptr: Pointer);
+  { Memory map weights with improved structure and readability }
+  procedure MapWeightsToMemory(var Weights: TTransformerWeights; const Config: TConfig; var DataPtr: Pointer);
   var
-    fptr: PSingle;
+    FloatPtr: PSingle;
+    BytePtr: pbyte;
+
+    procedure AllocateFloatWeights(var WeightPtr: PSingle; ElementCount: integer);
+    begin
+      WeightPtr := FloatPtr;
+      Inc(FloatPtr, ElementCount);
+    end;
+
+    procedure AllocateAndDequantizeTokens;
+    var
+      TokenTableSize: integer;
+    begin
+      TokenTableSize := Config.vocab_size * Config.dim;
+
+      // Initialize quantized token embeddings
+      Weights.q_tokens := CreateQuantizedTensors(Pointer(BytePtr), 1, TokenTableSize);
+
+      // Allocate and dequantize token embedding table
+      GetMem(Weights.token_embedding_table, TokenTableSize * SizeOf(single));
+      Weights.q_tokens^.Dequantize(Weights.token_embedding_table, TokenTableSize);
+    end;
+
   begin
-    fptr := PSingle(ptr);
+    FloatPtr := PSingle(DataPtr);
 
-    w.rms_att_weight := fptr;
-    Inc(fptr, p.n_layers * p.dim);
-    w.rms_ffn_weight := fptr;
-    Inc(fptr, p.n_layers * p.dim);
-    w.rms_final_weight := fptr;
-    Inc(fptr, p.dim);
-    w.q_norm_weights := fptr;
-    Inc(fptr, p.n_layers * p.head_dim);
-    w.k_norm_weights := fptr;
-    Inc(fptr, p.n_layers * p.head_dim);
+    // Map float weights in order
+    AllocateFloatWeights(Weights.rms_att_weight, Config.n_layers * Config.dim);
+    AllocateFloatWeights(Weights.rms_ffn_weight, Config.n_layers * Config.dim);
+    AllocateFloatWeights(Weights.rms_final_weight, Config.dim);
+    AllocateFloatWeights(Weights.q_norm_weights, Config.n_layers * Config.head_dim);
+    AllocateFloatWeights(Weights.k_norm_weights, Config.n_layers * Config.head_dim);
 
-    ptr := fptr;
-    w.q_tokens := InitQuantizedTensors(ptr, 1, p.vocab_size * p.dim);
+    // Switch to byte pointer for quantized data
+    BytePtr := pbyte(FloatPtr);
 
-    // Dequantize token embedding table
-    GetMem(w.token_embedding_table, p.vocab_size * p.dim * SizeOf(single));
-    Dequantize(w.q_tokens^, w.token_embedding_table, p.vocab_size * p.dim);
+    // Process token embeddings
+    AllocateAndDequantizeTokens;
 
-    w.wq := InitQuantizedTensors(ptr, p.n_layers, p.dim * (p.n_heads * p.head_dim));
-    w.wk := InitQuantizedTensors(ptr, p.n_layers, p.dim * (p.n_kv_heads * p.head_dim));
-    w.wv := InitQuantizedTensors(ptr, p.n_layers, p.dim * (p.n_kv_heads * p.head_dim));
-    w.wo := InitQuantizedTensors(ptr, p.n_layers, (p.n_heads * p.head_dim) * p.dim);
+    // Map quantized weight matrices
+    with Config do
+    begin
+      Weights.wq := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * (n_heads * head_dim));
+      Weights.wk := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * (n_kv_heads * head_dim));
+      Weights.wv := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * (n_kv_heads * head_dim));
+      Weights.wo := CreateQuantizedTensors(Pointer(BytePtr), n_layers, (n_heads * head_dim) * dim);
 
-    w.w1 := InitQuantizedTensors(ptr, p.n_layers, p.dim * p.hidden_dim);
-    w.w2 := InitQuantizedTensors(ptr, p.n_layers, p.hidden_dim * p.dim);
-    w.w3 := InitQuantizedTensors(ptr, p.n_layers, p.dim * p.hidden_dim);
+      // Feed-forward network weights
+      Weights.w1 := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * hidden_dim);
+      Weights.w2 := CreateQuantizedTensors(Pointer(BytePtr), n_layers, hidden_dim * dim);
+      Weights.w3 := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * hidden_dim);
 
-    if p.shared_classifier = 1 then
-      w.wcls := w.q_tokens
-    else
-      w.wcls := InitQuantizedTensors(ptr, 1, p.dim * p.vocab_size);
+      // Classifier weights (shared or separate)
+      if shared_classifier = 1 then
+        Weights.wcls := Weights.q_tokens
+      else
+        Weights.wcls := CreateQuantizedTensors(Pointer(BytePtr), 1, dim * vocab_size);
+    end;
+
+    // Update the data pointer
+    DataPtr := BytePtr;
+  end;
+
+  { Helper function to free quantized tensor arrays }
+  procedure FreeQuantizedTensors(var TensorPtr: PQuantizedTensor);
+  begin
+    if TensorPtr <> nil then
+    begin
+      FreeMem(TensorPtr);
+      TensorPtr := nil;
+    end;
   end;
 
   { Allocate run state }
@@ -314,7 +370,7 @@ var
 
       GS := config.group_size;
       weights_ptr := PChar(Data) + 256;
-      MemoryMapWeights(weights, config, weights_ptr);
+      MapWeightsToMemory(weights, config, weights_ptr);
     finally
       fs.Free;
     end;
@@ -439,7 +495,7 @@ var
       RMSNorm(s^.xb, s^.x, w^.rms_att_weight + l * p^.dim, p^.dim);
 
       // QKV matmuls
-      Quantize(s^.xq, s^.xb, p^.dim);
+      s^.xq.Quantize(s^.xb, p^.dim);
       MatMul(s^.q, s^.xq, (w^.wq + l)^, p^.dim, all_heads_dim);
       MatMul(s^.k, s^.xq, (w^.wk + l)^, p^.dim, kv_dim);
       MatMul(s^.v, s^.xq, (w^.wv + l)^, p^.dim, kv_dim);
@@ -514,7 +570,7 @@ var
       end;
 
       // Final attention matmul
-      Quantize(s^.xq, s^.xb, all_heads_dim);
+      s^.xq.Quantize(s^.xb, all_heads_dim);
       MatMul(s^.xb, s^.xq, (w^.wo + l)^, all_heads_dim, p^.dim);
 
       // Residual connection
@@ -525,7 +581,7 @@ var
       RMSNorm(s^.xb, s^.x, w^.rms_ffn_weight + l * p^.dim, p^.dim);
 
       // FFN
-      Quantize(s^.xq, s^.xb, p^.dim);
+      s^.xq.Quantize(s^.xb, p^.dim);
       MatMul(s^.hb, s^.xq, (w^.w1 + l)^, p^.dim, p^.hidden_dim);
       MatMul(s^.hb2, s^.xq, (w^.w3 + l)^, p^.dim, p^.hidden_dim);
 
@@ -537,7 +593,7 @@ var
       end;
 
       // Final FFN matmul
-      Quantize(s^.hq, s^.hb, p^.hidden_dim);
+      s^.hq.Quantize(s^.hb, p^.hidden_dim);
       MatMul(s^.xb, s^.hq, (w^.w2 + l)^, p^.hidden_dim, p^.dim);
 
       // Residual connection
@@ -549,7 +605,7 @@ var
     RMSNorm(s^.x, s^.x, w^.rms_final_weight, p^.dim);
 
     // Classifier
-    Quantize(s^.xq, s^.x, p^.dim);
+    s^.xq.Quantize(s^.x, p^.dim);
     MatMul(s^.logits, s^.xq, w^.wcls^, p^.dim, p^.vocab_size);
 
     Result := s^.logits;
@@ -593,12 +649,10 @@ var
     begin
       if enable_thinking then
         // Template: with-system-and-thinking
-        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 +
-          '<|im_end|>' + #10 + '<|im_start|>assistant' + #10
+        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>assistant' + #10
       else
         // Template: with-system
-        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 +
-          '<|im_end|>' + #10 + '<|im_start|>assistant' + #10 + '<think>' + #10 + #10 + '</think>' + #10 + #10;
+        template_content := '<|im_start|>system' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>user' + #10 + '%s' + #10 + '<|im_end|>' + #10 + '<|im_start|>assistant' + #10 + '<think>' + #10 + #10 + '</think>' + #10 + #10;
     end
     else
     begin
