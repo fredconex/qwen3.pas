@@ -22,3 +22,5 @@ lib/x86_64-win64/Tokenizer_Unit.o
 lib/x86_64-win64/Tokenizer_Unit.ppu
 lib/x86_64-win64/transformer_unit.o
 lib/x86_64-win64/transformer_unit.ppu
+lib/x86_64-win64/tensor_unit.o
+lib/x86_64-win64/tensor_unit.ppu
