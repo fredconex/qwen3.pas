@@ -17,14 +17,26 @@ const
 
 type
   { Quantized tensor structure }
-  PQuantizedTensor = ^TQuantizedTensor;
+  PQuantizedTensor = ^TInt8QuantizedTensor;
 
-  TQuantizedTensor = record
+  TInt8QuantizedTensor = record
     q: PInt8;    // quantized values (int8)
     s: PSingle;  // scaling factors
 
     procedure Dequantize(x: PSingle; n: longint);
     procedure Quantize(x: PSingle; n: longint);
+  end;
+
+  { Array of quantized tensors with utility methods }
+  TInt8QuantizedTensorArray = record
+    Data: array of TInt8QuantizedTensor;
+    
+    procedure Initialize(Count: integer; var DataPtr: Pointer; ElementsPerTensor: integer);
+    function GetTensor(Index: integer): TInt8QuantizedTensor;
+    function GetTensorPtr(Index: integer): PQuantizedTensor;
+    function Count: integer;
+    function IsValidIndex(Index: integer): boolean;
+    procedure Validate; // Validates that all tensors have valid pointers
   end;
 
   { Configuration structure }
@@ -49,15 +61,15 @@ type
     token_embedding_table: PSingle;
     rms_att_weight: PSingle;
     rms_ffn_weight: PSingle;
-    wq: PQuantizedTensor;
-    wk: PQuantizedTensor;
-    wv: PQuantizedTensor;
-    wo: PQuantizedTensor;
+    wq: TInt8QuantizedTensorArray;
+    wk: TInt8QuantizedTensorArray;
+    wv: TInt8QuantizedTensorArray;
+    wo: TInt8QuantizedTensorArray;
     q_norm_weights: PSingle;
     k_norm_weights: PSingle;
-    w1: PQuantizedTensor;
-    w2: PQuantizedTensor;
-    w3: PQuantizedTensor;
+    w1: TInt8QuantizedTensorArray;
+    w2: TInt8QuantizedTensorArray;
+    w3: TInt8QuantizedTensorArray;
     rms_final_weight: PSingle;
     wcls: PQuantizedTensor;
   end;
@@ -68,8 +80,8 @@ type
     xb: PSingle;
     hb: PSingle;
     hb2: PSingle;
-    xq: TQuantizedTensor;
-    hq: TQuantizedTensor;
+    xq: TInt8QuantizedTensor;
+    hq: TInt8QuantizedTensor;
     q: PSingle;
     k: PSingle;
     v: PSingle;
@@ -122,7 +134,7 @@ var
   GS: longint = 0; // Global group size for quantization
 
   { TQuantizedTensor method implementations }
-  procedure TQuantizedTensor.Dequantize(x: PSingle; n: longint);
+  procedure TInt8QuantizedTensor.Dequantize(x: PSingle; n: longint);
   var
     i: longint;
   begin
@@ -130,7 +142,7 @@ var
       (x + i)^ := (self.q + i)^ * (self.s + (i div GS))^;
   end;
 
-  procedure TQuantizedTensor.Quantize(x: PSingle; n: longint);
+  procedure TInt8QuantizedTensor.Quantize(x: PSingle; n: longint);
   var
     group, i: longint;
     wmax, val, scale, quant_value: single;
@@ -164,6 +176,81 @@ var
     end;
   end;
 
+  { TQuantizedTensorArray method implementations }
+  procedure TInt8QuantizedTensorArray.Initialize(Count: integer; var DataPtr: Pointer; ElementsPerTensor: integer);
+  var
+    CurrentPtr: pbyte;
+    i: integer;
+    QuantizedDataSize: integer;
+    ScaleDataSize: integer;
+  begin
+    SetLength(Data, Count);
+    CurrentPtr := pbyte(DataPtr);
+    QuantizedDataSize := ElementsPerTensor * SizeOf(shortint);
+    ScaleDataSize := (ElementsPerTensor div GS) * SizeOf(single);
+
+    // Initialize each tensor in the array
+    for i := 0 to Count - 1 do
+    begin
+      // Set quantized data pointer for tensor i
+      Data[i].q := PShortInt(CurrentPtr);
+      Inc(CurrentPtr, QuantizedDataSize);
+
+      // Set scale data pointer for tensor i
+      Data[i].s := PSingle(CurrentPtr);
+      Inc(CurrentPtr, ScaleDataSize);
+    end;
+
+    // Update the input pointer to point past all processed data
+    DataPtr := CurrentPtr;
+  end;
+
+  function TInt8QuantizedTensorArray.GetTensor(Index: integer): TInt8QuantizedTensor;
+  begin
+    if IsValidIndex(Index) then
+      Result := Data[Index]
+    else
+    begin
+      WriteLn(StdErr, 'Error: Tensor index out of bounds: ', Index);
+      Halt(1);
+    end;
+  end;
+
+  function TInt8QuantizedTensorArray.Count: integer;
+  begin
+    Result := Length(Data);
+  end;
+
+  function TInt8QuantizedTensorArray.GetTensorPtr(Index: integer): PQuantizedTensor;
+  begin
+    if IsValidIndex(Index) then
+      Result := @Data[Index]
+    else
+    begin
+      WriteLn(StdErr, 'Error: Tensor index out of bounds: ', Index);
+      Halt(1);
+    end;
+  end;
+
+  function TInt8QuantizedTensorArray.IsValidIndex(Index: integer): boolean;
+  begin
+    Result := (Index >= 0) and (Index < Length(Data));
+  end;
+
+  procedure TInt8QuantizedTensorArray.Validate;
+  var
+    i: integer;
+  begin
+    for i := 0 to Length(Data) - 1 do
+    begin
+      if (Data[i].q = nil) or (Data[i].s = nil) then
+      begin
+        WriteLn(StdErr, 'Error: Invalid tensor at index ', i, ' - null pointers detected');
+        Halt(1);
+      end;
+    end;
+  end;
+
   { Configure console for UTF-8 output }
   procedure ConfigureConsoleForUTF8;
   begin
@@ -185,38 +272,7 @@ var
 
 
 
-  { Initialize array of quantized tensors with better memory management }
-  function CreateQuantizedTensors(var DataPtr: Pointer; TensorCount: integer; ElementsPerTensor: integer): PQuantizedTensor;
-  var
-    TensorArray: PQuantizedTensor;
-    CurrentPtr: pbyte;
-    i: integer;
-    QuantizedDataSize: integer;
-    ScaleDataSize: integer;
-  begin
-    // Allocate memory for tensor array
-    GetMem(TensorArray, TensorCount * SizeOf(TQuantizedTensor));
 
-    CurrentPtr := pbyte(DataPtr);
-    QuantizedDataSize := ElementsPerTensor * SizeOf(shortint);
-    ScaleDataSize := (ElementsPerTensor div GS) * SizeOf(single);
-
-    // Initialize each tensor in the array
-    for i := 0 to TensorCount - 1 do
-    begin
-      // Set quantized data pointer for tensor i
-      (TensorArray + i)^.q := PShortInt(CurrentPtr);
-      Inc(CurrentPtr, QuantizedDataSize);
-
-      // Set scale data pointer for tensor i
-      (TensorArray + i)^.s := PSingle(CurrentPtr);
-      Inc(CurrentPtr, ScaleDataSize);
-    end;
-
-    // Update the input pointer to point past all processed data
-    DataPtr := CurrentPtr;
-    Result := TensorArray;
-  end;
 
   { Memory map weights with improved structure and readability }
   procedure MapWeightsToMemory(var Weights: TTransformerWeights; const Config: TConfig; var DataPtr: Pointer);
@@ -236,8 +292,12 @@ var
     begin
       TokenTableSize := Config.vocab_size * Config.dim;
 
-      // Initialize quantized token embeddings
-      Weights.q_tokens := CreateQuantizedTensors(Pointer(BytePtr), 1, TokenTableSize);
+      // Initialize quantized token embeddings (single tensor)
+      GetMem(Weights.q_tokens, SizeOf(TInt8QuantizedTensor));
+      Weights.q_tokens^.q := PShortInt(BytePtr);
+      Inc(BytePtr, TokenTableSize * SizeOf(shortint));
+      Weights.q_tokens^.s := PSingle(BytePtr);
+      Inc(BytePtr, (TokenTableSize div GS) * SizeOf(single));
 
       // Allocate and dequantize token embedding table
       GetMem(Weights.token_embedding_table, TokenTableSize * SizeOf(single));
@@ -263,35 +323,41 @@ var
     // Map quantized weight matrices
     with Config do
     begin
-      Weights.wq := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * (n_heads * head_dim));
-      Weights.wk := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * (n_kv_heads * head_dim));
-      Weights.wv := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * (n_kv_heads * head_dim));
-      Weights.wo := CreateQuantizedTensors(Pointer(BytePtr), n_layers, (n_heads * head_dim) * dim);
+      // Initialize arrays using the new type methods
+      Weights.wq.Initialize(n_layers, Pointer(BytePtr), dim * (n_heads * head_dim));
+      Weights.wk.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim));
+      Weights.wv.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim));
+      Weights.wo.Initialize(n_layers, Pointer(BytePtr), (n_heads * head_dim) * dim);
 
       // Feed-forward network weights
-      Weights.w1 := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * hidden_dim);
-      Weights.w2 := CreateQuantizedTensors(Pointer(BytePtr), n_layers, hidden_dim * dim);
-      Weights.w3 := CreateQuantizedTensors(Pointer(BytePtr), n_layers, dim * hidden_dim);
+      Weights.w1.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim);
+      Weights.w2.Initialize(n_layers, Pointer(BytePtr), hidden_dim * dim);
+      Weights.w3.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim);
+
+      // Validate all tensor arrays
+      Weights.wq.Validate;
+      Weights.wk.Validate;
+      Weights.wv.Validate;
+      Weights.wo.Validate;
+      Weights.w1.Validate;
+      Weights.w2.Validate;
+      Weights.w3.Validate;
 
       // Classifier weights (shared or separate)
       if shared_classifier = 1 then
         Weights.wcls := Weights.q_tokens
       else
-        Weights.wcls := CreateQuantizedTensors(Pointer(BytePtr), 1, dim * vocab_size);
+      begin
+        GetMem(Weights.wcls, SizeOf(TInt8QuantizedTensor));
+        Weights.wcls^.q := PShortInt(BytePtr);
+        Inc(BytePtr, dim * vocab_size * SizeOf(shortint));
+        Weights.wcls^.s := PSingle(BytePtr);
+        Inc(BytePtr, (dim * vocab_size div GS) * SizeOf(single));
+      end;
     end;
 
     // Update the data pointer
     DataPtr := BytePtr;
-  end;
-
-  { Helper function to free quantized tensor arrays }
-  procedure FreeQuantizedTensors(var TensorPtr: PQuantizedTensor);
-  begin
-    if TensorPtr <> nil then
-    begin
-      FreeMem(TensorPtr);
-      TensorPtr := nil;
-    end;
   end;
 
   { Allocate run state }
@@ -415,7 +481,7 @@ var
   end;
 
   { Matrix multiplication }
-  procedure MatMul(xout: PSingle; const x, w: TQuantizedTensor; n, d: longint);
+  procedure MatMul(xout: PSingle; const x, w: TInt8QuantizedTensor; n, d: longint);
   var
     i, j, k, groups: longint;
     val: single;
@@ -496,9 +562,9 @@ var
 
       // QKV matmuls
       s^.xq.Quantize(s^.xb, p^.dim);
-      MatMul(s^.q, s^.xq, (w^.wq + l)^, p^.dim, all_heads_dim);
-      MatMul(s^.k, s^.xq, (w^.wk + l)^, p^.dim, kv_dim);
-      MatMul(s^.v, s^.xq, (w^.wv + l)^, p^.dim, kv_dim);
+      MatMul(s^.q, s^.xq, w^.wq.GetTensor(l), p^.dim, all_heads_dim);
+      MatMul(s^.k, s^.xq, w^.wk.GetTensor(l), p^.dim, kv_dim);
+      MatMul(s^.v, s^.xq, w^.wv.GetTensor(l), p^.dim, kv_dim);
 
       // Q-RMSNorm + rotate each query head
       for h := 0 to p^.n_heads - 1 do
@@ -571,7 +637,7 @@ var
 
       // Final attention matmul
       s^.xq.Quantize(s^.xb, all_heads_dim);
-      MatMul(s^.xb, s^.xq, (w^.wo + l)^, all_heads_dim, p^.dim);
+      MatMul(s^.xb, s^.xq, w^.wo.GetTensor(l), all_heads_dim, p^.dim);
 
       // Residual connection
       for i := 0 to p^.dim - 1 do
@@ -582,8 +648,8 @@ var
 
       // FFN
       s^.xq.Quantize(s^.xb, p^.dim);
-      MatMul(s^.hb, s^.xq, (w^.w1 + l)^, p^.dim, p^.hidden_dim);
-      MatMul(s^.hb2, s^.xq, (w^.w3 + l)^, p^.dim, p^.hidden_dim);
+      MatMul(s^.hb, s^.xq, w^.w1.GetTensor(l), p^.dim, p^.hidden_dim);
+      MatMul(s^.hb2, s^.xq, w^.w3.GetTensor(l), p^.dim, p^.hidden_dim);
 
       // SwiGLU
       for i := 0 to p^.hidden_dim - 1 do
@@ -594,7 +660,7 @@ var
 
       // Final FFN matmul
       s^.hq.Quantize(s^.hb, p^.hidden_dim);
-      MatMul(s^.xb, s^.hq, (w^.w2 + l)^, p^.hidden_dim, p^.dim);
+      MatMul(s^.xb, s^.hq, w^.w2.GetTensor(l), p^.hidden_dim, p^.dim);
 
       // Residual connection
       for i := 0 to p^.dim - 1 do
@@ -623,13 +689,7 @@ var
   begin
     FreeMem(t.weights.q_tokens);
     FreeMem(t.weights.token_embedding_table);
-    FreeMem(t.weights.wq);
-    FreeMem(t.weights.wk);
-    FreeMem(t.weights.wv);
-    FreeMem(t.weights.wo);
-    FreeMem(t.weights.w1);
-    FreeMem(t.weights.w2);
-    FreeMem(t.weights.w3);
+    // Arrays are automatically freed by Pascal
     if t.weights.wcls <> t.weights.q_tokens then
       FreeMem(t.weights.wcls);
     FreeMem(t.Data);
