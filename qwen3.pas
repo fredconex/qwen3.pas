@@ -17,7 +17,7 @@ const
 
 type
   { Quantized tensor structure }
-  PQuantizedTensor = ^TInt8QuantizedTensor;
+  PInt8QuantizedTensor = ^TInt8QuantizedTensor;
 
   TInt8QuantizedTensor = record
     q: PInt8;    // quantized values (int8)
@@ -33,7 +33,7 @@ type
     
     procedure Initialize(Count: integer; var DataPtr: Pointer; ElementsPerTensor: integer);
     function GetTensor(Index: integer): TInt8QuantizedTensor;
-    function GetTensorPtr(Index: integer): PQuantizedTensor;
+    function GetTensorPtr(Index: integer): PInt8QuantizedTensor;
     function Count: integer;
     function IsValidIndex(Index: integer): boolean;
     procedure Validate; // Validates that all tensors have valid pointers
@@ -57,7 +57,7 @@ type
 
   { Transformer weights }
   TTransformerWeights = record
-    q_tokens: PQuantizedTensor;
+    q_tokens: PInt8QuantizedTensor;
     token_embedding_table: PSingle;
     rms_att_weight: PSingle;
     rms_ffn_weight: PSingle;
@@ -71,7 +71,7 @@ type
     w2: TInt8QuantizedTensorArray;
     w3: TInt8QuantizedTensorArray;
     rms_final_weight: PSingle;
-    wcls: PQuantizedTensor;
+    wcls: PInt8QuantizedTensor;
   end;
 
   { Run state }
@@ -91,14 +91,12 @@ type
     value_cache: PSingle;
   end;
 
-  { Transformer structure }
-  TTransformer = record
-    config: TConfig;
-    weights: TTransformerWeights;
-    state: TRunState;
-    Data: Pointer;
-    file_size: int64;
+  { Probability index for sampling }
+  TProbIndex = record
+    prob: single;
+    index: longint;
   end;
+  PProbIndex = ^TProbIndex;
 
   { Tokenizer }
   PPChar = ^pchar;
@@ -114,13 +112,6 @@ type
     system_prompt_template: array[0..1023] of char;
   end;
 
-  { Probability index for sampling }
-  TProbIndex = record
-    prob: single;
-    index: longint;
-  end;
-  PProbIndex = ^TProbIndex;
-
   { Sampler }
   TSampler = record
     vocab_size: longint;
@@ -128,6 +119,22 @@ type
     temperature: single;
     topp: single;
     rng_state: QWord;
+  end;
+
+  { Transformer structure }
+  TTransformer = record
+    config: TConfig;
+    weights: TTransformerWeights;
+    state: TRunState;
+    Data: Pointer;
+    file_size: int64;
+    
+    // Methods
+    procedure Build(checkpoint_path: string; ctx_length: longint);
+    procedure Free;
+    function Forward(token: longint; pos: longint): PSingle;
+    procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
+    procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
   end;
 
 var
@@ -221,7 +228,7 @@ var
     Result := Length(Data);
   end;
 
-  function TInt8QuantizedTensorArray.GetTensorPtr(Index: integer): PQuantizedTensor;
+  function TInt8QuantizedTensorArray.GetTensorPtr(Index: integer): PInt8QuantizedTensor;
   begin
     if IsValidIndex(Index) then
       Result := @Data[Index]
@@ -525,8 +532,7 @@ var
   end;
 
 
-  { Forward pass }
-  function Forward(var transformer: TTransformer; token: longint; pos: longint): PSingle;
+  function TTransformer.Forward(token: longint; pos: longint): PSingle;
   var
     p: ^TConfig;
     w: ^TTransformerWeights;
@@ -539,9 +545,9 @@ var
     score: single;
     sigmoid_val: single;
   begin
-    p := @transformer.config;
-    w := @transformer.weights;
-    s := @transformer.state;
+    p := @self.config;
+    w := @self.weights;
+    s := @self.state;
     kv_dim := p^.n_kv_heads * p^.head_dim;
     kv_mul := p^.n_heads div p^.n_kv_heads;
     all_heads_dim := p^.n_heads * p^.head_dim;
@@ -677,23 +683,22 @@ var
     Result := s^.logits;
   end;
 
-  { Build transformer }
-  procedure BuildTransformer(var t: TTransformer; checkpoint_path: string; ctx_length: longint);
+  { TTransformer method implementations }
+  procedure TTransformer.Build(checkpoint_path: string; ctx_length: longint);
   begin
-    ReadCheckpoint(checkpoint_path, t.config, t.weights, t.Data, t.file_size, ctx_length);
-    MallocRunState(t.state, t.config);
+    ReadCheckpoint(checkpoint_path, self.config, self.weights, self.Data, self.file_size, ctx_length);
+    MallocRunState(self.state, self.config);
   end;
 
-  { Free transformer }
-  procedure FreeTransformer(var t: TTransformer);
+  procedure TTransformer.Free;
   begin
-    FreeMem(t.weights.q_tokens);
-    FreeMem(t.weights.token_embedding_table);
+    FreeMem(self.weights.q_tokens);
+    FreeMem(self.weights.token_embedding_table);
     // Arrays are automatically freed by Pascal
-    if t.weights.wcls <> t.weights.q_tokens then
-      FreeMem(t.weights.wcls);
-    FreeMem(t.Data);
-    FreeRunState(t.state);
+    if self.weights.wcls <> self.weights.q_tokens then
+      FreeMem(self.weights.wcls);
+    FreeMem(self.Data);
+    FreeRunState(self.state);
   end;
 
   { Tokenizer functions }
@@ -863,9 +868,8 @@ var
 
   function SampleTopP(probabilities: PSingle; n: longint; topp: single; probindex: PProbIndex; coin: single): longint;
   var
-    n0, i, j, last_idx: longint;
+    n0, i, last_idx: longint;
     cutoff, cumulative_prob, r, cdf: single;
-    temp: TProbIndex;
   begin
     n0 := 0;
     cutoff := (1.0 - topp) / (n - 1);
@@ -1115,8 +1119,7 @@ var
     FreeMem(str_buffer);
   end;
 
-  { Generation functions }
-  procedure Generate(var transformer: TTransformer; var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
+  procedure TTransformer.Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
   var
     empty_prompt: pchar;
     num_prompt_tokens: longint;
@@ -1150,10 +1153,10 @@ var
     start_time := Now;
     first_token_time := 0;
 
-    while pos < transformer.config.seq_len do
+    while pos < self.config.seq_len do
     begin
       // Forward transformer to get logits
-      logits := Forward(transformer, token, pos);
+      logits := self.Forward(token, pos);
 
       // Advance state machine
       if pos < num_prompt_tokens - 1 then
@@ -1201,13 +1204,14 @@ var
     FreeMem(prompt_tokens);
   end;
 
-  procedure Chat(var transformer: TTransformer; var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
+  procedure TTransformer.Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
   var
     user_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
     rendered_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
     num_prompt_tokens: longint = 0;
     prompt_tokens: PLongInt;
-    user_turn, Next, token, pos: longint;
+    Next : longint = 0;
+    user_turn, token, pos: longint;
     logits: PSingle;
     temp_str: string;
     start_time, first_token_time, end_time: TDateTime;
@@ -1226,7 +1230,7 @@ var
     while True do
     begin
       // Check context window
-      if pos >= transformer.config.seq_len then
+      if pos >= self.config.seq_len then
       begin
         WriteLn;
         WriteLn('(context window full, clearing)');
@@ -1286,7 +1290,7 @@ var
         token := Next;
 
       // Forward transformer
-      logits := Forward(transformer, token, pos);
+      logits := self.Forward(token, pos);
       Inc(pos);
       Next := Sample(sampler, logits);
 
@@ -1414,7 +1418,7 @@ begin
     topp := 0.9;
 
   // Build transformer
-  BuildTransformer(transformer, checkpoint_path, ctx_length);
+  transformer.Build(checkpoint_path, ctx_length);
 
   writeln('BuildTransformer.');
 
@@ -1445,9 +1449,9 @@ begin
 
   // Run
   if StrComp(mode, 'generate') = 0 then
-    Generate(transformer, tokenizer, sampler, prompt)
+    transformer.Generate(tokenizer, sampler, prompt)
   else if StrComp(mode, 'chat') = 0 then
-    Chat(transformer, tokenizer, sampler, prompt, system_prompt)
+    transformer.Chat(tokenizer, sampler, prompt, system_prompt)
   else
   begin
     WriteLn(StdErr, 'Unknown mode: ', mode);
@@ -1457,5 +1461,5 @@ begin
   // Cleanup
   FreeSampler(sampler);
   FreeTokenizer(tokenizer);
-  FreeTransformer(transformer);
+  transformer.Free;
 end.
