@@ -39,6 +39,15 @@
         <IsPartOfProject Value="True"/>
         <UnitName Value="Qwen3"/>
       </Unit>
+      <Unit>
+        <Filename Value="src\transformer_unit.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="Transformer_Unit"/>
+      </Unit>
+      <Unit>
+        <Filename Value="src\Tokenizer_Unit.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
     </Units>
   </ProjectOptions>
   <CompilerOptions>

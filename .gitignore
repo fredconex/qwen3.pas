@@ -12,3 +12,13 @@ models/Qwen3-4B.bin
 models/Qwen3-4B.bin.tokenizer
 __pycache__/model.cpython-310.pyc
 qwen3.exe
+src/backup/Tokenizer_Unit.pas
+src/backup/tokenizer_utils.pas.bak
+src/backup/tokenizer.pas.bak
+src/backup/TokenizerUtils.pas.bak
+src/backup/transformer_unit.pas
+src/backup/transformer_unit.pas.bak
+lib/x86_64-win64/Tokenizer_Unit.o
+lib/x86_64-win64/Tokenizer_Unit.ppu
+lib/x86_64-win64/transformer_unit.o
+lib/x86_64-win64/transformer_unit.ppu
