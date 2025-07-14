@@ -544,7 +544,10 @@ begin
   end_time := Now;
   total_time := MilliSecondsBetween(start_time, end_time) / 1000.0;
   time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
-  tokens_per_second := tokens_generated / total_time;
+  if tokens_generated > 0 then
+    tokens_per_second := tokens_generated / ((MilliSecondsBetween(first_token_time, end_time)) / 1000.0)
+  else
+    tokens_per_second := 0;
 
   WriteLn('--- Response Statistics ---');
   WriteLn('Prompt tokens:', num_prompt_tokens,
@@ -657,15 +660,18 @@ begin
           end_time := Now;
           total_time := MilliSecondsBetween(start_time, end_time) / 1000.0;
           time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
-          tokens_per_second := tokens_generated / total_time;
+          if tokens_generated > 0 then
+            tokens_per_second := tokens_generated / ((MilliSecondsBetween(first_token_time, end_time)) / 1000.0)
+          else
+            tokens_per_second := 0;
 
           WriteLn('--- Response Statistics ---');
           WriteLn('Prompt tokens:', num_prompt_tokens,
             ' | Generated tokens: ', tokens_generated,
             ' | Total tokens: ', num_prompt_tokens + tokens_generated,
-            ' | Time to first token: ', time_to_first_token: 0: 3,
-            's | Total response time: ', total_time: 0: 3,
-            's | Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
+            ' | Time to first token: ', time_to_first_token: 0: 3, 's',
+            ' | Total response time: ', total_time: 0: 3, 's',
+            ' | Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
         end;
 
         user_turn := 1;
