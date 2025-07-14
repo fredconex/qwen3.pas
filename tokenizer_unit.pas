@@ -8,9 +8,13 @@ interface
 uses
   SysUtils,
   Math,
-  Classes;
+  Classes,
+  fgl;
 
 type
+  { Hashmap for vocabulary lookup }
+  TVocabMap = specialize TFPGMap<string, longint>;
+
   { Probability index for sampling }
   TProbIndex = record
     prob: single;
@@ -21,6 +25,7 @@ type
   { Tokenizer }
   TTokenizer = record
     vocab: PPChar;
+    vocab_map: TVocabMap;
     merge_scores: PSingle;
     vocab_size: longint;
     max_token_length: longword;
@@ -35,6 +40,7 @@ type
     procedure Free;
     function Decode(token: longint): pchar;
     procedure Encode(Text: pchar; tokens: PLongInt; var n_tokens: longint);
+    function LookupToken(str: pchar): longint;
   end;
 
   { Sampler }
@@ -50,7 +56,6 @@ type
   end;
 
 { Tokenizer functions }
-function StrLookup(str: pchar; vocab: PPChar; vocab_size: longint): longint;
 
 { Sampling functions }
 function RandomU32(var state: QWord): longword;
@@ -108,12 +113,17 @@ var
   x: longint = 0;
   len: longint = 0;
   i: longint;
+  token_str: string;
 begin
   tokenizer_path := checkpoint_path + '.tokenizer';
   Self.vocab_size := _vocab_size;
 
   GetMem(Self.vocab, vocab_size * SizeOf(PChar));
   GetMem(Self.merge_scores, vocab_size * SizeOf(single));
+  
+  // Initialize hashmap
+  Self.vocab_map := TVocabMap.Create;
+  Self.vocab_map.Sorted := True;
 
   AssignFile(f, tokenizer_path);
   Reset(f, 1);
@@ -137,6 +147,10 @@ begin
       BlockRead(f, (Self.vocab + i)^[0], len);
       (Self.vocab + i)^[len] := #0;
     end;
+    
+    // Add to hashmap for fast lookup
+    token_str := string((Self.vocab + i)^);
+    Self.vocab_map.Add(token_str, i);
   end;
 
   CloseFile(f);
@@ -153,6 +167,10 @@ begin
     FreeMem(Self.vocab[i]);
   FreeMem(Self.vocab);
   FreeMem(Self.merge_scores);
+  
+  // Free hashmap
+  if Assigned(Self.vocab_map) then
+    Self.vocab_map.Free;
 end;
 
 function TTokenizer.Decode(token: longint): pchar;
@@ -160,16 +178,16 @@ begin
   Result := Self.vocab[token];
 end;
 
-function StrLookup(str: pchar; vocab: PPChar; vocab_size: longint): longint;
+function TTokenizer.LookupToken(str: pchar): longint;
 var
-  i: longint;
+  token_str: string;
+  idx: longint;
 begin
-  for i := 0 to vocab_size - 1 do
-  begin
-    if StrComp(str, vocab[i]) = 0 then
-      Exit(i);
-  end;
-  Result := -1;
+  token_str := string(str);
+  if Self.vocab_map.Find(token_str, idx) then
+    Result := Self.vocab_map.Data[idx]
+  else
+    Result := -1;
 end;
 
 procedure TTokenizer.Encode(Text: pchar; tokens: PLongInt; var n_tokens: longint);
@@ -223,7 +241,7 @@ begin
         Move(c^, special_token[0], end_of_token_pos + 1);
         special_token[end_of_token_pos + 1] := #0;
 
-        id := StrLookup(@special_token[0], Self.vocab, Self.vocab_size);
+        id := Self.LookupToken(@special_token[0]);
         if id <> -1 then
         begin
           Inc(c, end_of_token_pos);
@@ -234,7 +252,7 @@ begin
 
     // Not a special token, look up single character
     if found_special_token = 0 then
-      id := StrLookup(str_buffer, Self.vocab, Self.vocab_size);
+      id := Self.LookupToken(str_buffer);
 
     if id <> -1 then
     begin
@@ -275,7 +293,7 @@ begin
         Move(Self.vocab[(tokens + i + 1)^]^, (merged_str + len1)^, len2 * SizeOf(char));
         (merged_str + len1 + len2)^ := #0;
 
-        id := StrLookup(merged_str, Self.vocab, Self.vocab_size);
+        id := Self.LookupToken(merged_str);
 
         if (id <> -1) and ((Self.merge_scores + id)^ > best_score) then
         begin
@@ -302,6 +320,7 @@ begin
   end;
 
   FreeMem(str_buffer);
+  writeln('Prompt Encoded.');
 end;
 
 { QuickSort partition function for top-p sampling }
