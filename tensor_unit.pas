@@ -177,7 +177,7 @@ begin
 end;
 
 { Matrix multiplication }
-procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
+{procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
 var
   i, j, k, groups: longint;
   val: single;
@@ -218,6 +218,130 @@ begin
     xout^ := val;
     Inc(xout);
   end;
+end;  }
+
+function Int8_DotProduct8(const x_base, w_base: PShortInt): LongInt; assembler; inline;
+asm
+  // Load 8 bytes from x_base
+  movq xmm0, [x_base]
+
+  // Load 8 bytes from w_base
+  movq xmm1, [w_base]
+
+  // Convert signed 8-bit integers to 16-bit integers
+  pmovsxbw xmm0, xmm0     // Sign-extend x_base bytes to words
+  pmovsxbw xmm1, xmm1     // Sign-extend w_base bytes to words
+
+  // Multiply corresponding 16-bit elements
+  pmullw xmm0, xmm1
+
+  // Horizontal add to sum all 8 products
+  // First, add adjacent pairs (8 elements -> 4 elements)
+  phaddw xmm0, xmm0
+
+  // Add adjacent pairs again (4 elements -> 2 elements)
+  phaddw xmm0, xmm0
+
+  // Add the final pair and extract to 32-bit result
+  phaddw xmm0, xmm0
+
+  // Extract the lower 16 bits and sign-extend to 32-bit
+  pextrw eax, xmm0, 0
+  movsx eax, ax
 end;
 
-end. 
+function Int8_DotProduct64(const x_base, w_base: PShortInt): LongInt; assembler; inline;
+asm
+  // This function computes the dot product of two vectors of 64 signed 8-bit integers.
+  // It requires AVX2 support.
+  // We use ymm4 as our 256-bit accumulator, which holds 8 x 32-bit integer sums.
+  vpxor ymm4, ymm4, ymm4       // Zero out the accumulator register ymm4
+
+  // --- Process first 16 bytes (elements 0-15) ---
+  vpmovsxbw ymm0, [x_base]      // Load 16 bytes from x and sign-extend to 16-bit words in ymm0
+  vpmovsxbw ymm1, [w_base]      // Load 16 bytes from w and sign-extend to 16-bit words in ymm1
+  vpmaddwd ymm2, ymm0, ymm1     // Multiply 16-bit words, then add adjacent 32-bit products.
+                                // ymm2 now contains 8 partial dot products of 2 elements each.
+  vpaddd ymm4, ymm4, ymm2       // Add the partial products to our main accumulator.
+
+  // --- Process second 16 bytes (elements 16-31) ---
+  vpmovsxbw ymm0, [x_base+16]
+  vpmovsxbw ymm1, [w_base+16]
+  vpmaddwd ymm2, ymm0, ymm1
+  vpaddd ymm4, ymm4, ymm2
+
+  // --- Process third 16 bytes (elements 32-47) ---
+  vpmovsxbw ymm0, [x_base+32]
+  vpmovsxbw ymm1, [w_base+32]
+  vpmaddwd ymm2, ymm0, ymm1
+  vpaddd ymm4, ymm4, ymm2
+
+  // --- Process fourth 16 bytes (elements 48-63) ---
+  vpmovsxbw ymm0, [x_base+48]
+  vpmovsxbw ymm1, [w_base+48]
+  vpmaddwd ymm2, ymm0, ymm1
+  vpaddd ymm4, ymm4, ymm2
+
+  // At this point, ymm4 contains 8 partial sums (each a sum of 8 products).
+  // Now we need to sum these 8 dword values together to get the final result.
+
+  // --- Horizontal Summation of the accumulator (ymm4) ---
+  // Add the upper 128 bits of ymm4 to the lower 128 bits.
+  vextracti128 xmm0, ymm4, 1    // xmm0 = upper 128 bits of ymm4
+  vpaddd xmm4, xmm4, xmm0       // xmm4 = lower 128 bits + upper 128 bits.
+                                // Result is in the lower 128 bits (xmm4). We now have 4 sums.
+
+  // Horizontal add the remaining 4 dwords in xmm4
+  vphaddd xmm4, xmm4, xmm4      // [d0,d1,d2,d3] -> [d0+d1, d2+d3, d0+d1, d2+d3]
+  vphaddd xmm4, xmm4, xmm4      // [s0,s1,s0,s1] -> [s0+s1, s0+s1, s0+s1, s0+s1]
+
+  // The final sum is now in the lowest 32 bits of xmm4.
+  vmovd eax, xmm4               // Move the 32-bit result into eax
+
+  // It's good practice to clear the upper state of YMM registers after use
+  // to avoid performance penalties when mixing AVX and legacy SSE code.
+  vzeroupper
+end;
+
+// Updated MatMul procedure
+procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
+var
+  i, j: longint; // k is no longer needed
+  val: single;
+  ival: longint;
+  x_base, w_base: PShortInt;
+  x_scales, w_scales: PSingle;
+  group_scale: single;
+  groups: integer;
+begin
+  // GS is a constant, assumed to be 64
+  groups := n div GS;
+  for i := 0 to d - 1 do
+  begin
+    val := 0;
+    w_base := w.q + (i * n);
+    w_scales := w.s + (i * groups);
+    x_base := self.q;
+    x_scales := self.s;
+
+    for j := 0 to groups - 1 do
+    begin
+      // The inner loop over k is replaced by a single call to the 64-element dot product function.
+      ival := Int8_DotProduct64(x_base, w_base);
+
+      group_scale := x_scales^ * w_scales^;
+      val += ival * group_scale;
+
+      // Advance pointers to the next group of 64 elements for the next iteration.
+      Inc(x_base, GS);
+      Inc(w_base, GS);
+      Inc(x_scales);
+      Inc(w_scales);
+    end;
+
+    xout^ := val;
+    Inc(xout);
+  end;
+end;
+
+end.
