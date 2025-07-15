@@ -573,22 +573,41 @@ end;
 // Simplified Generate method using GenerateFromTokens
 procedure TTransformer.Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
 var
-  empty_prompt: pchar;
+  user_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
   num_prompt_tokens: longint;
   prompt_tokens: PLongInt;
+  temp_str: string;
+  input_prompt: pchar;
 begin
-  empty_prompt := '';
-  if prompt = nil then
-    prompt := empty_prompt;
-
-  // Encode prompt into tokens
+  GetMem(prompt_tokens, PROMPT_BUFFER_SIZE * SizeOf(longint));
   num_prompt_tokens := 0;
-  GetMem(prompt_tokens, (StrLen(prompt) + 3) * SizeOf(longint));
-  Tokenizer.Encode(prompt, prompt_tokens, num_prompt_tokens);
+
+  // Determine user prompt: CLI or interactive
+  if (prompt <> nil) and (StrLen(prompt) > 0) then
+  begin
+    StrCopy(@user_prompt[0], prompt);
+    input_prompt := prompt;
+  end
+  else
+  begin
+    Write('> ');
+    ReadLn(temp_str);
+    if Length(temp_str) = 0 then
+    begin
+      FreeMem(prompt_tokens);
+      Exit;
+    end;
+    StrCopy(@user_prompt[0], PChar(temp_str));
+    input_prompt := @user_prompt[0];
+  end;
+
+  // Encode prompt as-is (no template)
+  Tokenizer.Encode(input_prompt, prompt_tokens, num_prompt_tokens);
 
   if num_prompt_tokens < 1 then
   begin
-    WriteLn(StdErr, 'Please provide a prompt using -i <string> on the command line.');
+    WriteLn(StdErr, 'Please provide a prompt using -i <string> on the command line or enter text interactively.');
+    FreeMem(prompt_tokens);
     Halt(1);
   end;
 
