@@ -42,6 +42,11 @@ type
 function SafeGetMem(Size: PtrUInt): Pointer;
 
 { Matrix multiplication for quantized tensors }
+function Int8_DotProduct64_AVX2(const x_base, w_base: PShortInt): LongInt; assembler;
+function Int8_DotProduct(const x_base, w_base: PShortInt): LongInt;
+
+function DotProduct(a, b: PSingle; dim: Integer): Single;
+function DotProduct_Hybrid(a, b: PSingle; dim: Integer): Single;
 
 implementation
 
@@ -198,6 +203,85 @@ begin
     Result += x_ptr[7] * w_ptr[7];
     Inc(x_ptr, 8);
     Inc(w_ptr, 8);
+  end;
+end;
+
+{$ASMMODE INTEL}
+function Float_DotProduct32_AVX2(const x_base, w_base: PSingle): Single; assembler;
+asm
+  // Load base pointers into general-purpose registers to use as iterators.
+  mov rax, x_base
+  mov rdx, w_base
+
+  // --- Unrolled Loop ---
+
+  // Block 1 (offset 0)
+  vmovups ymm0, YMMWORD PTR [rax]
+  vmulps  ymm0, ymm0, YMMWORD PTR [rdx]
+
+  // Block 2 (offset 32)
+  // Manually advance the pointers instead of using an offset in the instruction.
+  add rax, 32
+  add rdx, 32
+  vmovups ymm1, YMMWORD PTR [rax]
+  vmulps  ymm1, ymm1, YMMWORD PTR [rdx]
+
+  // Block 3 (offset 64)
+  add rax, 32
+  add rdx, 32
+  vmovups ymm2, YMMWORD PTR [rax]
+  vmulps  ymm2, ymm2, YMMWORD PTR [rdx]
+
+  // Block 4 (offset 96)
+  add rax, 32
+  add rdx, 32
+  vmovups ymm3, YMMWORD PTR [rax]
+  vmulps  ymm3, ymm3, YMMWORD PTR [rdx]
+
+  // --- Summation Tree ---
+  vaddps ymm0, ymm0, ymm1
+  vaddps ymm2, ymm2, ymm3
+  vaddps ymm0, ymm0, ymm2
+
+  // --- Horizontal Sum ---
+  vextractf128 xmm1, ymm0, 1
+  vaddps xmm0, xmm0, xmm1
+  vhaddps xmm0, xmm0, xmm0
+  vhaddps xmm0, xmm0, xmm0
+
+  vzeroupper
+end;
+
+// Standard dot product implementation
+function DotProduct(a, b: PSingle; dim: Integer): Single;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to dim - 1 do
+    Result := Result + (a + i)^ * (b + i)^;
+end;
+
+function DotProduct_Hybrid(a, b: PSingle; dim: Integer): Single;
+const
+  BLOCK = 32;                       // elements processed per AVX2 call
+var
+  blocks, tail : Integer;
+begin
+  Result := 0;
+
+  for blocks := 0 to (dim div block)-1 do
+  begin
+    Result := Result + Float_DotProduct32_AVX2(a, b);
+    Inc(a, BLOCK);
+    Inc(b, BLOCK);
+  end;
+
+  // scalar clean-up for the last <32 elements
+  for tail := 0 to (dim mod BLOCK)-1 do
+  begin
+    Result := Result + a^ * b^;
+    Inc(a);  Inc(b);
   end;
 end;
 

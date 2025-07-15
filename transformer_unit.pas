@@ -331,14 +331,21 @@ begin
   end;
 end;
 
+procedure VectorMulAdd(dst, src: PSingle; scalar: Single; dim: Integer);
+var
+  i: Integer;
+begin
+  for i := 0 to dim - 1 do
+    (dst + i)^ := (dst + i)^ + scalar * (src + i)^;
+end;
+
 { Helper function to process attention layer }
 procedure ProcessAttentionLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, pos: longint);
 var
   kv_dim, kv_mul, all_heads_dim: longint;
   loff: QWord;
-  h, t, i: longint;
-  q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
-  score: single;
+  h, t: longint;
+  att_ptr, q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
 begin
   kv_dim := p.n_kv_heads * p.head_dim;
   kv_mul := p.n_heads div p.n_kv_heads;
@@ -373,32 +380,30 @@ begin
     ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
   end;
 
-  // Multihead attention
+  // Multihead attention - optimized
   for h := 0 to p.n_heads - 1 do
   begin
     q_ptr := s.q + h * p.head_dim;
+    att_ptr := s.att + h * p.seq_len;
 
+    // Compute all attention scores for this head
     for t := 0 to pos do
     begin
       k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
-
-      score := 0;
-      for i := 0 to p.head_dim - 1 do
-        score := score + (q_ptr + i)^ * (k_ptr + i)^;
-
-      (s.att + h * p.seq_len + t)^ := score / Sqrt(p.head_dim);
+      (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) / Sqrt(p.head_dim);
     end;
 
-    Softmax(s.att + h * p.seq_len, pos + 1);
+    // Apply softmax
+    Softmax(att_ptr, pos + 1);
 
+    // Compute weighted sum of values
     xb_ptr := s.xb + h * p.head_dim;
     FillChar(xb_ptr^, p.head_dim * SizeOf(single), 0);
 
     for t := 0 to pos do
     begin
       v_ptr := s.value_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
-      for i := 0 to p.head_dim - 1 do
-        (xb_ptr + i)^ := (xb_ptr + i)^ + (s.att + h * p.seq_len + t)^ * (v_ptr + i)^;
+      VectorMulAdd(xb_ptr, v_ptr, (att_ptr + t)^, p.head_dim);
     end;
   end;
 
