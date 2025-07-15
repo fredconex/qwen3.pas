@@ -322,7 +322,7 @@ begin
   end;
 
   FreeMem(str_buffer);
-  writeln('Prompt Encoded.');
+  //writeln('Prompt Encoded.');
 end;
 
 { QuickSort partition function for top-p sampling }
