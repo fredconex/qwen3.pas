@@ -176,51 +176,33 @@ begin
 end;
 
 { Matrix multiplication }
-{procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
+function Int8_DotProduct(const x_base, w_base: PShortInt): LongInt;
 var
-  i, j, k, groups: longint;
-  val: single;
-  ival: longint;
-  x_base, w_base: ^shortint;
-  x_scales, w_scales: PSingle;
-  group_scale: single;
+  i: longint;
+  x_ptr, w_ptr: PShortInt;
 begin
-  groups := n div GS;
-  for i := 0 to d - 1 do
+  Result := 0;
+  x_ptr := x_base;
+  w_ptr := w_base;
+
+  // Process 8 elements at a time (matching the unrolled loop in MatMul)
+  for i := 0 to (GS div 8) - 1 do
   begin
-    val := 0;
-    w_base := w.q + (i * n);
-    w_scales := w.s + (i * groups);
-    x_base := self.q;
-    x_scales := self.s;
-    for j := 0 to groups - 1 do
-    begin
-      ival := 0;
-      for k := 0 to (GS div 8) - 1 do
-      begin
-        ival += x_base[0] * w_base[0];
-        ival += x_base[1] * w_base[1];
-        ival += x_base[2] * w_base[2];
-        ival += x_base[3] * w_base[3];
-        ival += x_base[4] * w_base[4];
-        ival += x_base[5] * w_base[5];
-        ival += x_base[6] * w_base[6];
-        ival += x_base[7] * w_base[7];
-        Inc(x_base, 8);
-        Inc(w_base, 8);
-      end;
-      group_scale := x_scales^ * w_scales^;
-      val += ival * group_scale;
-      Inc(x_scales);
-      Inc(w_scales);
-    end;
-    xout^ := val;
-    Inc(xout);
+    Result += x_ptr[0] * w_ptr[0];
+    Result += x_ptr[1] * w_ptr[1];
+    Result += x_ptr[2] * w_ptr[2];
+    Result += x_ptr[3] * w_ptr[3];
+    Result += x_ptr[4] * w_ptr[4];
+    Result += x_ptr[5] * w_ptr[5];
+    Result += x_ptr[6] * w_ptr[6];
+    Result += x_ptr[7] * w_ptr[7];
+    Inc(x_ptr, 8);
+    Inc(w_ptr, 8);
   end;
-end;  }
+end;
 
 {$ASMMODE INTEL}
-function Int8_DotProduct64(const x_base, w_base: PShortInt): LongInt; assembler;
+function Int8_DotProduct64_AVX2(const x_base, w_base: PShortInt): LongInt; assembler;
 asm
   // This function computes the dot product of two vectors of 64 signed 8-bit integers.
   // It requires AVX2 support.
@@ -297,7 +279,8 @@ begin
     for j := 0 to groups - 1 do
     begin
       // The inner loop over k is replaced by a single call to the 64-element dot product function.
-      ival := Int8_DotProduct64(x_base, w_base);
+      //ival := Int8_DotProduct(x_base, w_base);
+      ival := Int8_DotProduct64_AVX2(x_base, w_base);
 
       group_scale := x_scales^ * w_scales^;
       val += ival * group_scale;
