@@ -307,22 +307,27 @@ begin
 end;
 
 { Helper function to apply rotary positional embeddings }
-procedure ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim: longint; const pos: longint);
+procedure ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim, pos: longint);
 var
   j: longint;
-  freq, cos_freq, sin_freq, x_val, y_val: single;
+  pfreq, cos_freq, sin_freq, x_val, y_val: single;
+  head_dim_half : single;
+  head_dim_half_int : longint;
 begin
-  for j := 0 to (head_dim div 2) - 1 do
+  head_dim_half := head_dim / 2;
+  head_dim_half_int := head_dim div 2;
+
+  for j := 0 to head_dim_half_int - 1 do
   begin
-    freq := Power(1e6, -j / (head_dim / 2));
-    cos_freq := Cos(pos * freq);
-    sin_freq := Sin(pos * freq);
+    pfreq := pos * Power(1e6, -j / head_dim_half);
+    cos_freq := Cos(pfreq);
+    sin_freq := Sin(pfreq);
 
     x_val := (ptr + j)^;
-    y_val := (ptr + j + head_dim div 2)^;
+    y_val := (ptr + j + head_dim_half_int)^;
 
     (ptr + j)^ := x_val * cos_freq - y_val * sin_freq;
-    (ptr + j + head_dim div 2)^ := x_val * sin_freq + y_val * cos_freq;
+    (ptr + j + head_dim_half_int)^ := x_val * sin_freq + y_val * cos_freq;
   end;
 end;
 
