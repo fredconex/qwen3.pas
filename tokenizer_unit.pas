@@ -2,6 +2,8 @@ unit Tokenizer_Unit;
 
 {$mode objfpc}{$H+}
 {$modeswitch advancedrecords}
+{$HINTS OFF}
+{$NOTES OFF}
 
 interface
 

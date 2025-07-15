@@ -8,8 +8,7 @@ interface
 
 uses
   SysUtils,
-  Classes,
-  Math;
+  Classes;
 
 var
   GS: longint = 0; // Global group size for quantization
@@ -220,37 +219,8 @@ begin
   end;
 end;  }
 
-function Int8_DotProduct8(const x_base, w_base: PShortInt): LongInt; assembler; inline;
-asm
-  // Load 8 bytes from x_base
-  movq xmm0, [x_base]
-
-  // Load 8 bytes from w_base
-  movq xmm1, [w_base]
-
-  // Convert signed 8-bit integers to 16-bit integers
-  pmovsxbw xmm0, xmm0     // Sign-extend x_base bytes to words
-  pmovsxbw xmm1, xmm1     // Sign-extend w_base bytes to words
-
-  // Multiply corresponding 16-bit elements
-  pmullw xmm0, xmm1
-
-  // Horizontal add to sum all 8 products
-  // First, add adjacent pairs (8 elements -> 4 elements)
-  phaddw xmm0, xmm0
-
-  // Add adjacent pairs again (4 elements -> 2 elements)
-  phaddw xmm0, xmm0
-
-  // Add the final pair and extract to 32-bit result
-  phaddw xmm0, xmm0
-
-  // Extract the lower 16 bits and sign-extend to 32-bit
-  pextrw eax, xmm0, 0
-  movsx eax, ax
-end;
-
-function Int8_DotProduct64(const x_base, w_base: PShortInt): LongInt; assembler; inline;
+{$ASMMODE INTEL}
+function Int8_DotProduct64(const x_base, w_base: PShortInt): LongInt; assembler;
 asm
   // This function computes the dot product of two vectors of 64 signed 8-bit integers.
   // It requires AVX2 support.

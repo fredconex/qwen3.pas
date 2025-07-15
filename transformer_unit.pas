@@ -274,7 +274,18 @@ begin
     (o + j)^ := (weight + j)^ * (ss * (x + j)^);
 end;
 
+function Sigmoid(const x: single): single; inline;
+begin
+  Result := 1.0 / (1.0 + Exp(-x));
+end;
 
+procedure SwiGLU(var hb, hb2: PSingle; hidden_dim: longint);
+var
+  i: longint;
+begin
+  for i := 0 to hidden_dim - 1 do
+    (hb + i)^ *= Sigmoid((hb + i)^) * (hb2 + i)^;
+end;
 
 { TTransformer method implementations }
 procedure TTransformer.Build(checkpoint_path: string; ctx_length: longint);
@@ -392,9 +403,6 @@ end;
 
 { Helper function to process feed-forward network layer }
 procedure ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l: longint);
-var
-  i: longint;
-  sigmoid_val: single;
 begin
   // FFN RMS norm
   RMSNorm(s.xb, s.x, w.rms_ffn_weight + l * p.dim, p.dim);
@@ -405,11 +413,7 @@ begin
   s.xq.MatMul(s.hb2, w.w3.GetTensor(l), p.dim, p.hidden_dim);
 
   // SwiGLU
-  for i := 0 to p.hidden_dim - 1 do
-  begin
-    sigmoid_val := 1.0 / (1.0 + Exp(-(s.hb + i)^));
-    (s.hb + i)^ := (s.hb + i)^ * sigmoid_val * (s.hb2 + i)^;
-  end;
+  SwiGLU(s.hb, s.hb2, p.hidden_dim);
 
   // Final FFN matmul
   s.hq.Quantize(s.hb, p.hidden_dim);

@@ -60,9 +60,6 @@
       <IncludeFiles Value="$(ProjOutDir)"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
-    <Parsing>
-      <Style Value="1"/>
-    </Parsing>
     <CodeGeneration>
       <Optimizations>
         <OptimizationLevel Value="2"/>
