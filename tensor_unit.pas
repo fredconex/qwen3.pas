@@ -293,28 +293,37 @@ asm
   // We use ymm4 as our 256-bit accumulator, which holds 8 x 32-bit integer sums.
   vpxor ymm4, ymm4, ymm4       // Zero out the accumulator register ymm4
 
+  // Load base pointers into registers
+  mov rax, x_base
+  mov rdx, w_base
+
   // --- Process first 16 bytes (elements 0-15) ---
-  vpmovsxbw ymm0, [x_base]      // Load 16 bytes from x and sign-extend to 16-bit words in ymm0
-  vpmovsxbw ymm1, [w_base]      // Load 16 bytes from w and sign-extend to 16-bit words in ymm1
-  vpmaddwd ymm2, ymm0, ymm1     // Multiply 16-bit words, then add adjacent 32-bit products.
-                                // ymm2 now contains 8 partial dot products of 2 elements each.
-  vpaddd ymm4, ymm4, ymm2       // Add the partial products to our main accumulator.
+  vpmovsxbw ymm0, [rax]      // Load 16 bytes from x and sign-extend to 16-bit words in ymm0
+  vpmovsxbw ymm1, [rdx]      // Load 16 bytes from w and sign-extend to 16-bit words in ymm1
+  vpmaddwd ymm2, ymm0, ymm1  // Multiply 16-bit words, then add adjacent 32-bit products.
+  vpaddd ymm4, ymm4, ymm2    // Add the partial products to our main accumulator.
 
   // --- Process second 16 bytes (elements 16-31) ---
-  vpmovsxbw ymm0, [x_base+16]
-  vpmovsxbw ymm1, [w_base+16]
+  add rax, 16
+  add rdx, 16
+  vpmovsxbw ymm0, [rax]
+  vpmovsxbw ymm1, [rdx]
   vpmaddwd ymm2, ymm0, ymm1
   vpaddd ymm4, ymm4, ymm2
 
   // --- Process third 16 bytes (elements 32-47) ---
-  vpmovsxbw ymm0, [x_base+32]
-  vpmovsxbw ymm1, [w_base+32]
+  add rax, 16
+  add rdx, 16
+  vpmovsxbw ymm0, [rax]
+  vpmovsxbw ymm1, [rdx]
   vpmaddwd ymm2, ymm0, ymm1
   vpaddd ymm4, ymm4, ymm2
 
   // --- Process fourth 16 bytes (elements 48-63) ---
-  vpmovsxbw ymm0, [x_base+48]
-  vpmovsxbw ymm1, [w_base+48]
+  add rax, 16
+  add rdx, 16
+  vpmovsxbw ymm0, [rax]
+  vpmovsxbw ymm1, [rdx]
   vpmaddwd ymm2, ymm0, ymm1
   vpaddd ymm4, ymm4, ymm2
 
@@ -338,6 +347,7 @@ asm
   // to avoid performance penalties when mixing AVX and legacy SSE code.
   vzeroupper
 end;
+
 
 // Updated MatMul procedure
 procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
