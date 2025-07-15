@@ -84,6 +84,7 @@ type
     procedure Build(checkpoint_path: string; ctx_length: longint);
     procedure Free;
     function Forward(token: longint; pos: longint): PSingle;
+    function GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
     procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
     procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
   end;
@@ -476,17 +477,105 @@ begin
   Result := s^.logits;
 end;
 
-procedure TTransformer.Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
+function TTransformer.GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler;
+  prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
 var
-  empty_prompt: pchar;
-  num_prompt_tokens: longint;
-  prompt_tokens: PLongInt;
   Next, token, pos: longint;
   logits: PSingle;
   start_time, first_token_time, end_time: TDateTime;
   tokens_generated: longint;
   time_to_first_token, total_time: double;
   tokens_per_second: double;
+  response_started: boolean;
+begin
+  // Initialize state
+  pos := start_pos;
+  tokens_generated := 0;
+  start_time := Now;
+  first_token_time := 0;
+  response_started := False;
+
+  // Determine initial token
+  if pos < num_prompt_tokens then
+    token := (prompt_tokens + pos)^
+  else
+    token := 0; // This shouldn't happen in normal usage
+
+  while pos < self.config.seq_len do
+  begin
+    // Forward transformer to get logits
+    logits := self.Forward(token, pos);
+
+    // Advance state machine
+    if pos < num_prompt_tokens - 1 then
+      Next := (prompt_tokens + pos + 1)^
+    else
+      Next := Sampler.Sample(logits);
+
+    Inc(pos);
+
+    // Handle response generation (after prompt tokens)
+    if pos >= num_prompt_tokens then
+    begin
+      // Check for termination
+      if (Next = tokenizer.bos_token_id) or (Next = tokenizer.eos_token_id) then
+        Break;
+
+      // Track first token time
+      if not response_started then
+      begin
+        first_token_time := Now;
+        response_started := True;
+      end;
+
+      // Output token and count it
+      Write(Tokenizer.Decode(Next));
+      Flush(Output);
+      Inc(tokens_generated);
+    end
+    else
+    begin
+      // Still processing prompt tokens - output them only if requested
+      if output_prompt then
+      begin
+        Write(Tokenizer.Decode(token));
+        Flush(Output);
+      end;
+    end;
+
+    token := Next;
+  end;
+
+  // Calculate and display statistics
+  if response_started then
+  begin
+    end_time := Now;
+    total_time := MilliSecondsBetween(start_time, end_time) / 1000.0;
+    time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
+    if tokens_generated > 0 then
+      tokens_per_second := tokens_generated / ((MilliSecondsBetween(first_token_time, end_time)) / 1000.0)
+    else
+      tokens_per_second := 0;
+
+    WriteLn;
+    WriteLn('--- Response Statistics ---');
+    WriteLn('Prompt tokens:', num_prompt_tokens,
+      ' | Generated tokens: ', tokens_generated,
+      ' | Total tokens: ', num_prompt_tokens + tokens_generated,
+      ' | Time to first token: ', time_to_first_token: 0: 3, 's',
+      ' | Total response time: ', total_time: 0: 3, 's',
+      ' | Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
+  end;
+
+  Result := pos; // Return final position
+end;
+
+// Simplified Generate method using GenerateFromTokens
+procedure TTransformer.Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
+var
+  empty_prompt: pchar;
+  num_prompt_tokens: longint;
+  prompt_tokens: PLongInt;
 begin
   empty_prompt := '';
   if prompt = nil then
@@ -503,89 +592,26 @@ begin
     Halt(1);
   end;
 
-  // Start main loop
-  token := prompt_tokens^;
-  pos := 0;
-  tokens_generated := 0;
-  start_time := Now;
-  first_token_time := 0;
-
-  while pos < self.config.seq_len do
-  begin
-    // Forward transformer to get logits
-    logits := self.Forward(token, pos);
-
-    // Advance state machine
-    if pos < num_prompt_tokens - 1 then
-      Next := (prompt_tokens + pos + 1)^
-    else
-      Next := Sampler.Sample(logits);
-
-    Inc(pos);
-
-    // Print token
-    Write(Tokenizer.Decode(token));
-    Flush(Output);
-
-    // Track first token time
-    if (pos >= num_prompt_tokens) and (first_token_time = 0) then
-      first_token_time := Now;
-
-    // Count generated tokens (excluding prompt tokens)
-    if pos >= num_prompt_tokens then
-      Inc(tokens_generated);
-
-    token := Next;
-
-    // Check termination condition
-    if (pos >= num_prompt_tokens) and ((Next = tokenizer.bos_token_id) or (Next = tokenizer.eos_token_id)) then
-      Break;
-  end;
-
-  WriteLn;
-
-  // Calculate and display statistics
-  end_time := Now;
-  total_time := MilliSecondsBetween(start_time, end_time) / 1000.0;
-  time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
-  if tokens_generated > 0 then
-    tokens_per_second := tokens_generated / ((MilliSecondsBetween(first_token_time, end_time)) / 1000.0)
-  else
-    tokens_per_second := 0;
-
-  WriteLn('--- Response Statistics ---');
-  WriteLn('Prompt tokens:', num_prompt_tokens,
-    ' | Generated tokens: ', tokens_generated,
-    ' | Total tokens: ', num_prompt_tokens + tokens_generated,
-    ' | Time to first token: ', time_to_first_token: 0: 3,
-    's | Total response time: ', total_time: 0: 3,
-    's | Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
+  // Generate response using shared function
+  GenerateFromTokens(tokenizer, sampler, prompt_tokens, num_prompt_tokens, 0, True);
 
   FreeMem(prompt_tokens);
 end;
 
+// Simplified Chat method using GenerateFromTokens
 procedure TTransformer.Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
 var
   user_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
   rendered_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
   num_prompt_tokens: longint = 0;
   prompt_tokens: PLongInt;
-  Next : longint = 0;
-  user_turn, token, pos: longint;
-  logits: PSingle;
+  user_turn, pos: longint;
   temp_str: string;
-  start_time, first_token_time, end_time: TDateTime;
-  tokens_generated: longint;
-  time_to_first_token, total_time: double;
-  tokens_per_second: double;
-  response_started: boolean;
 begin
   GetMem(prompt_tokens, PROMPT_BUFFER_SIZE * SizeOf(longint));
 
   user_turn := 1;
   pos := 0;
-  tokens_generated := 0;
-  response_started := False;
 
   while True do
   begin
@@ -634,67 +660,12 @@ begin
 
       // Encode prompt
       Tokenizer.Encode(@rendered_prompt[0], prompt_tokens, num_prompt_tokens);
-      pos := 0;
       user_turn := 0;
-      start_time := Now;
-      first_token_time := 0;
-    end;
 
-    // Determine token to pass to transformer
-    if pos < num_prompt_tokens then
-      token := (prompt_tokens + pos)^
-    else
-      token := Next;
+      // Generate response using shared function
+      pos := GenerateFromTokens(tokenizer, sampler, prompt_tokens, num_prompt_tokens, 0, False);
 
-    // Forward transformer
-    logits := self.Forward(token, pos);
-    Inc(pos);
-    Next := Sampler.Sample(logits);
-
-    // Assistant responding
-    if pos >= num_prompt_tokens then
-    begin
-      if (Next = tokenizer.bos_token_id) or (Next = tokenizer.eos_token_id) then
-      begin
-        WriteLn;
-
-        // Calculate and display statistics for this response
-        if response_started then
-        begin
-          end_time := Now;
-          total_time := MilliSecondsBetween(start_time, end_time) / 1000.0;
-          time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
-          if tokens_generated > 0 then
-            tokens_per_second := tokens_generated / ((MilliSecondsBetween(first_token_time, end_time)) / 1000.0)
-          else
-            tokens_per_second := 0;
-
-          WriteLn('--- Response Statistics ---');
-          WriteLn('Prompt tokens:', num_prompt_tokens,
-            ' | Generated tokens: ', tokens_generated,
-            ' | Total tokens: ', num_prompt_tokens + tokens_generated,
-            ' | Time to first token: ', time_to_first_token: 0: 3, 's',
-            ' | Total response time: ', total_time: 0: 3, 's',
-            ' | Tokens per second: ', tokens_per_second: 0: 2, ' tk/s');
-        end;
-
-        user_turn := 1;
-        tokens_generated := 0;
-        response_started := False;
-      end
-      else
-      begin
-        // Track first token time
-        if not response_started then
-        begin
-          first_token_time := Now;
-          response_started := True;
-        end;
-
-        Write(Tokenizer.Decode(Next));
-        Flush(Output);
-        Inc(tokens_generated);
-      end;
+      user_turn := 1;
     end;
   end;
 
