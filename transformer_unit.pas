@@ -79,7 +79,7 @@ type
     state: TRunState;
     Data: Pointer;
     file_size: int64;
-    
+
     // Methods
     procedure Build(checkpoint_path: string; ctx_length: longint);
     procedure Free;
@@ -460,13 +460,13 @@ begin
   begin
     // Process attention layer
     ProcessAttentionLayer(s^, w^, p^, l, pos);
-    
+
     // Apply residual connection after attention
     ApplyResidualConnection(s^.x, s^.xb, p^.dim);
 
     // Process feed-forward network layer
     ProcessFFNLayer(s^, w^, p^, l);
-    
+
     // Apply residual connection after FFN
     ApplyResidualConnection(s^.x, s^.xb, p^.dim);
   end;
@@ -477,8 +477,7 @@ begin
   Result := s^.logits;
 end;
 
-function TTransformer.GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler;
-  prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
+function TTransformer.GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
 var
   Next, token, pos: longint;
   logits: PSingle;
@@ -691,4 +690,4 @@ begin
   FreeMem(prompt_tokens);
 end;
 
-end. 
+end.
