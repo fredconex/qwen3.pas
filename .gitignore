@@ -26,3 +26,4 @@ lib/x86_64-win64/tensor_unit.o
 lib/x86_64-win64/tensor_unit.ppu
 backup/tensor_unit.pas
 backup/transformer_unit.pas
+qwen3.lps
