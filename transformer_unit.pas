@@ -74,6 +74,10 @@ type
 
   { Transformer structure }
   TTransformer = class
+  private
+    procedure MapWeightsToMemory(var DataPtr: Pointer);
+    procedure LoadFromFile(checkpoint: string; ctx_length: longint);
+    function GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
   public
     config: TConfig;
     weights: TTransformerWeights;
@@ -84,7 +88,6 @@ type
     constructor Create(checkpoint_path: string; ctx_length: longint);
     destructor Destroy; override;
     function Forward(token: longint; pos: longint): PSingle;
-    function GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
     procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
     procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
   end;
@@ -92,7 +95,7 @@ type
 implementation
 
 { Memory map weights with improved structure and readability }
-procedure MapWeightsToMemory(var Weights: TTransformerWeights; const Config: TConfig; var DataPtr: Pointer);
+procedure TTransformer.MapWeightsToMemory(var DataPtr: Pointer);
 var
   FloatPtr: PSingle;
   BytePtr: pbyte;
@@ -221,7 +224,7 @@ begin
 end;
 
 { Read checkpoint }
-procedure ReadCheckpoint(checkpoint: string; var config: TConfig; var weights: TTransformerWeights; var Data: Pointer; var file_size: int64; ctx_length: longint);
+procedure TTransformer.LoadFromFile(checkpoint: string; ctx_length: longint);
 var
   fs: TFileStream;
   weights_ptr: Pointer;
@@ -253,7 +256,7 @@ begin
 
     GS := config.group_size;
     weights_ptr := PChar(Data) + 256;
-    MapWeightsToMemory(weights, config, weights_ptr);
+    MapWeightsToMemory(weights_ptr);
   finally
     fs.Free;
   end;
@@ -291,7 +294,7 @@ end;
 { TTransformer method implementations }
 constructor TTransformer.Create(checkpoint_path: string; ctx_length: longint);
 begin
-  ReadCheckpoint(checkpoint_path, self.config, self.weights, self.Data, self.file_size, ctx_length);
+  LoadFromFile(checkpoint_path, ctx_length);
   MallocRunState(self.state, self.config);
 end;
 
