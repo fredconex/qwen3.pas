@@ -44,7 +44,7 @@ var
   rng_seed: QWord = 0;
   mode: PChar = 'chat';
   system_prompt: PChar = nil;
-  enable_thinking: longint = 0;
+  enable_thinking: boolean;
   ctx_length: longint = 4096;
   transformer: TTransformer;
   tokenizer: TTokenizer;
@@ -79,7 +79,7 @@ begin
       'i': prompt := PChar(ParamStr(i + 1));
       'm': mode := PChar(ParamStr(i + 1));
       'y': system_prompt := PChar(ParamStr(i + 1));
-      'r': enable_thinking := StrToInt(ParamStr(i + 1));
+      'r': enable_thinking := StrToBool(ParamStr(i + 1));
       else
         ErrorUsage;
     end;
@@ -97,7 +97,7 @@ begin
 
   // Build
   transformer := TTransformer.Create(checkpoint_path, ctx_length);
-  tokenizer := TTokenizer.Create(checkpoint_path, transformer.config.vocab_size, enable_thinking = 1);
+  tokenizer := TTokenizer.Create(checkpoint_path, transformer.config.vocab_size, enable_thinking);
   sampler := TSampler.Create(transformer.config.vocab_size, temperature, topp, rng_seed);
 
 

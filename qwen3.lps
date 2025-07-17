@@ -9,8 +9,10 @@
         <Filename Value="qwen3.pas"/>
         <IsPartOfProject Value="True"/>
         <UnitName Value="Qwen3"/>
-        <CursorPos X="81" Y="103"/>
-        <UsageCount Value="72"/>
+        <IsVisibleTab Value="True"/>
+        <TopLine Value="58"/>
+        <CursorPos X="40" Y="82"/>
+        <UsageCount Value="75"/>
         <Loaded Value="True"/>
       </Unit>
       <Unit>
@@ -19,7 +21,7 @@
         <UnitName Value="Transformer_Unit"/>
         <EditorIndex Value="-1"/>
         <CursorPos X="48" Y="12"/>
-        <UsageCount Value="60"/>
+        <UsageCount Value="63"/>
       </Unit>
       <Unit>
         <Filename Value="src\Tokenizer_Unit.pas"/>
@@ -27,7 +29,7 @@
         <EditorIndex Value="-1"/>
         <TopLine Value="41"/>
         <CursorPos X="33" Y="52"/>
-        <UsageCount Value="60"/>
+        <UsageCount Value="63"/>
       </Unit>
       <Unit>
         <Filename Value="C:\lazarus\fpc\3.2.2\source\rtl\inc\systemh.inc"/>
@@ -115,27 +117,27 @@
         <Filename Value="tokenizer_unit.pas"/>
         <UnitName Value="Tokenizer_Unit"/>
         <EditorIndex Value="2"/>
-        <TopLine Value="453"/>
-        <CursorPos Y="476"/>
-        <UsageCount Value="16"/>
+        <TopLine Value="96"/>
+        <CursorPos X="85" Y="113"/>
+        <UsageCount Value="18"/>
         <Loaded Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="transformer_unit.pas"/>
         <UnitName Value="Transformer_Unit"/>
-        <IsVisibleTab Value="True"/>
         <EditorIndex Value="1"/>
-        <TopLine Value="61"/>
-        <CursorPos Y="81"/>
-        <UsageCount Value="29"/>
+        <TopLine Value="97"/>
+        <CursorPos X="104" Y="118"/>
+        <UsageCount Value="30"/>
         <Loaded Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="tensor_unit.pas"/>
         <UnitName Value="Tensor_Unit"/>
         <EditorIndex Value="3"/>
-        <CursorPos X="41" Y="10"/>
-        <UsageCount Value="29"/>
+        <TopLine Value="17"/>
+        <CursorPos X="172" Y="34"/>
+        <UsageCount Value="30"/>
         <Loaded Value="True"/>
       </Unit>
       <Unit>
@@ -185,123 +187,124 @@
     </Units>
     <JumpHistory HistoryIndex="29">
       <Position>
-        <Filename Value="tensor_unit.pas"/>
-        <Caret Line="224" Column="9" TopLine="179"/>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="321" Column="5" TopLine="274"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="421" Column="5" TopLine="374"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="374" Column="5" TopLine="327"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="347" Column="5" TopLine="323"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="349" Column="5" TopLine="325"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="341" Column="23" TopLine="303"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="300" Column="7" TopLine="257"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="287" Column="2" TopLine="263"/>
       </Position>
       <Position>
         <Filename Value="tensor_unit.pas"/>
-        <Caret Line="193" Column="46" TopLine="193"/>
+        <Caret Line="37" Column="52" TopLine="23"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="365" Column="43" TopLine="341"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="381" Column="45"/>
+      </Position>
+      <Position>
+        <Filename Value="tensor_unit.pas"/>
+        <Caret Line="54" Column="58" TopLine="44"/>
+      </Position>
+      <Position>
+        <Filename Value="tensor_unit.pas"/>
+        <Caret Line="347" TopLine="327"/>
+      </Position>
+      <Position>
+        <Filename Value="tensor_unit.pas"/>
+        <Caret Line="41" Column="19" TopLine="10"/>
+      </Position>
+      <Position>
+        <Filename Value="tensor_unit.pas"/>
+        <Caret Line="168" Column="79" TopLine="153"/>
+      </Position>
+      <Position>
+        <Filename Value="tensor_unit.pas"/>
+        <Caret Line="40" Column="25" TopLine="17"/>
+      </Position>
+      <Position>
+        <Filename Value="tensor_unit.pas"/>
+        <Caret Line="275" Column="32" TopLine="264"/>
+      </Position>
+      <Position>
+        <Filename Value="tensor_unit.pas"/>
+        <Caret Line="168" TopLine="153"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="19" Column="21"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="591" Column="43" TopLine="559"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="597" Column="43" TopLine="559"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="638" Column="43" TopLine="597"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="639" Column="47" TopLine="598"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="19" TopLine="609"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="336" Column="17" TopLine="306"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="408" Column="19" TopLine="368"/>
+      </Position>
+      <Position>
+        <Filename Value="transformer_unit.pas"/>
+        <Caret Line="588" Column="59" TopLine="593"/>
       </Position>
       <Position>
         <Filename Value="qwen3.pas"/>
-        <Caret Line="17" Column="8"/>
+        <Caret Line="97" Column="38" TopLine="80"/>
+      </Position>
+      <Position>
+        <Filename Value="tokenizer_unit.pas"/>
+        <Caret Line="40" Column="17" TopLine="15"/>
       </Position>
       <Position>
         <Filename Value="qwen3.pas"/>
-        <Caret Line="30" Column="15" TopLine="7"/>
-      </Position>
-      <Position>
-        <Filename Value="qwen3.pas"/>
-        <Caret Line="14" Column="10"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="190" Column="16" TopLine="163"/>
-      </Position>
-      <Position>
-        <Filename Value="tensor_unit.pas"/>
-        <Caret Line="42" Column="16" TopLine="18"/>
-      </Position>
-      <Position>
-        <Filename Value="tensor_unit.pas"/>
-        <Caret Line="174" Column="11" TopLine="23"/>
-      </Position>
-      <Position>
-        <Filename Value="tensor_unit.pas"/>
-        <Caret Line="172" Column="15" TopLine="156"/>
-      </Position>
-      <Position>
-        <Filename Value="tensor_unit.pas"/>
-        <Caret Line="42" Column="20" TopLine="18"/>
-      </Position>
-      <Position>
-        <Filename Value="tensor_unit.pas"/>
-        <Caret Line="172" Column="20" TopLine="149"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="190" Column="16" TopLine="163"/>
-      </Position>
-      <Position>
-        <Filename Value="tensor_unit.pas"/>
-        <Caret Line="41" TopLine="18"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="13" Column="101"/>
-      </Position>
-      <Position>
-        <Filename Value="tokenizer_unit.pas"/>
-      </Position>
-      <Position>
-        <Filename Value="tokenizer_unit.pas"/>
-        <Caret Line="120" TopLine="100"/>
-      </Position>
-      <Position>
-        <Filename Value="tokenizer_unit.pas"/>
-        <Caret Line="107" Column="65" TopLine="92"/>
-      </Position>
-      <Position>
-        <Filename Value="tokenizer_unit.pas"/>
-        <Caret Line="490" Column="67" TopLine="464"/>
-      </Position>
-      <Position>
-        <Filename Value="tokenizer_unit.pas"/>
-        <Caret Line="468" Column="28" TopLine="444"/>
-      </Position>
-      <Position>
-        <Filename Value="tokenizer_unit.pas"/>
-        <Caret Line="477" Column="22" TopLine="409"/>
-      </Position>
-      <Position>
-        <Filename Value="tokenizer_unit.pas"/>
-        <Caret Line="476" TopLine="453"/>
-      </Position>
-      <Position>
-        <Filename Value="qwen3.pas"/>
-        <Caret Line="97" Column="85" TopLine="77"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="97" Column="24" TopLine="67"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="99" Column="40" TopLine="73"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="77" TopLine="73"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="96" Column="47" TopLine="72"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="257" Column="10" TopLine="233"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="91" Column="48" TopLine="67"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="226" Column="57" TopLine="202"/>
-      </Position>
-      <Position>
-        <Filename Value="transformer_unit.pas"/>
-        <Caret Line="296" Column="14" TopLine="251"/>
+        <Caret Line="100" Column="97" TopLine="68"/>
       </Position>
     </JumpHistory>
     <RunParams>
