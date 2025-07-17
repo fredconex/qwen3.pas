@@ -40,9 +40,9 @@ type
     constructor Create(checkpoint_path: string; _vocab_size: longint; enable_thinking: boolean);
     destructor Destroy; override;
     procedure LoadPromptTemplate(var out_template: array of char; with_system_prompt: boolean; enable_thinking: boolean);
-    function Decode(token: longint): pchar;
-    procedure Encode(Text: pchar; tokens: PLongInt; var n_tokens: longint);
-    function LookupToken(str: pchar): longint;
+    function Decode(token: longint): PChar;
+    procedure Encode(Text: PChar; tokens: PLongInt; var n_tokens: longint);
+    function LookupToken(str: PChar): longint;
   end;
 
   { Sampler }
@@ -59,7 +59,7 @@ type
     function Sample(logits: PSingle): longint;
   end;
 
-{ Tokenizer functions }
+  { Tokenizer functions }
 
 { Sampling functions }
 function RandomU32(var state: QWord): longword;
@@ -106,7 +106,7 @@ begin
   end;
 
   // Copy content to template array
-  for i := 1 to Min(Length(template_content), High(out_template)) do
+  for i := 1 to Min(Length(template_content), high(out_template)) do
     out_template[i - 1] := template_content[i];
 end;
 
@@ -124,7 +124,7 @@ begin
 
   GetMem(Self.vocab, vocab_size * SizeOf(PChar));
   GetMem(Self.merge_scores, vocab_size * SizeOf(single));
-  
+
   // Initialize hashmap
   Self.vocab_map := TVocabMap.Create;
   Self.vocab_map.Sorted := True;
@@ -151,7 +151,7 @@ begin
       BlockRead(f, (Self.vocab + i)^[0], len);
       (Self.vocab + i)^[len] := #0;
     end;
-    
+
     // Add to hashmap for fast lookup
     token_str := string((Self.vocab + i)^);
     Self.vocab_map.Add(token_str, i);
@@ -171,19 +171,19 @@ begin
     FreeMem(Self.vocab[i]);
   FreeMem(Self.vocab);
   FreeMem(Self.merge_scores);
-  
+
   // Free hashmap
   if Assigned(Self.vocab_map) then
     Self.vocab_map.Free;
   inherited Destroy;
 end;
 
-function TTokenizer.Decode(token: longint): pchar;
+function TTokenizer.Decode(token: longint): PChar;
 begin
   Result := Self.vocab[token];
 end;
 
-function TTokenizer.LookupToken(str: pchar): longint;
+function TTokenizer.LookupToken(str: PChar): longint;
 var
   token_str: string;
   idx: longint;
@@ -195,18 +195,18 @@ begin
     Result := -1;
 end;
 
-procedure TTokenizer.Encode(Text: pchar; tokens: PLongInt; var n_tokens: longint);
+procedure TTokenizer.Encode(Text: PChar; tokens: PLongInt; var n_tokens: longint);
 var
-  str_buffer: pchar;
+  str_buffer: PChar;
   special_token: array[0..64] of char = '';
-  c: pchar;
+  c: PChar;
   id: longint = 0;
   found_special_token: longint;
   end_of_token_pos, k: longint;
   best_score: single;
   best_id, best_idx: longint;
   i: longint;
-  merged_str: pchar;
+  merged_str: PChar;
   len1, len2: longint;
 begin
   // Allocate buffer for merge candidates
@@ -467,16 +467,16 @@ end;
 { Build sampler }
 constructor TSampler.Create(_vocab_size: longint; _temperature: single; _topp: single; rng_seed: QWord);
 begin
-  self.vocab_size := _vocab_size;
-  self.temperature := _temperature;
-  self.topp := _topp;
-  self.rng_state := rng_seed;
-  GetMem(self.probindex, _vocab_size * SizeOf(TProbIndex));
+  Self.vocab_size := _vocab_size;
+  Self.temperature := _temperature;
+  Self.topp := _topp;
+  Self.rng_state := rng_seed;
+  GetMem(Self.probindex, _vocab_size * SizeOf(TProbIndex));
 end;
 
 destructor TSampler.Destroy;
 begin
-  FreeMem(self.probindex);
+  FreeMem(Self.probindex);
   inherited Destroy;
 end;
 
@@ -486,27 +486,27 @@ var
   i: longint;
   coin: single;
 begin
-  if self.temperature = 0 then
+  if Self.temperature = 0 then
   begin
     // Greedy argmax sampling
-    Result := SampleArgmax(logits, self.vocab_size);
+    Result := SampleArgmax(logits, Self.vocab_size);
   end
   else
   begin
     // Apply temperature
-    for i := 0 to self.vocab_size - 1 do
-      (logits + i)^ := (logits + i)^ / self.temperature;
+    for i := 0 to Self.vocab_size - 1 do
+      (logits + i)^ := (logits + i)^ / Self.temperature;
 
     // Apply softmax
-    Softmax(logits, self.vocab_size);
+    Softmax(logits, Self.vocab_size);
 
     // Sample
-    coin := RandomF32(self.rng_state);
+    coin := RandomF32(Self.rng_state);
 
-    if (self.topp <= 0) or (self.topp >= 1) then
-      Result := SampleMult(logits, self.vocab_size, coin)
+    if (Self.topp <= 0) or (Self.topp >= 1) then
+      Result := SampleMult(logits, Self.vocab_size, coin)
     else
-      Result := SampleTopP(logits, self.vocab_size, self.topp, self.probindex, coin);
+      Result := SampleTopP(logits, Self.vocab_size, Self.topp, Self.probindex, coin);
   end;
 end;
 
@@ -532,4 +532,4 @@ begin
     (x + i)^ := (x + i)^ / sum;
 end;
 
-end. 
+end.

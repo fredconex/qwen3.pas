@@ -37,20 +37,20 @@ uses
 
   { Main program }
 var
-  checkpoint_path: pchar = nil;
+  checkpoint_path: PChar = nil;
   temperature: single = 0.6;
   topp: single = 0.95;
-  prompt: pchar = nil;
+  prompt: PChar = nil;
   rng_seed: QWord = 0;
-  mode: pchar = 'chat';
-  system_prompt: pchar = nil;
+  mode: PChar = 'chat';
+  system_prompt: PChar = nil;
   enable_thinking: longint = 0;
   ctx_length: longint = 4096;
   transformer: TTransformer;
   tokenizer: TTokenizer;
   sampler: TSampler;
   i: longint;
-  arg: pchar;
+  arg: PChar;
 begin
   // Configure console for UTF-8 output
   ConfigureConsoleForUTF8;
@@ -96,9 +96,9 @@ begin
     topp := 0.9;
 
   // Build
-  Transformer := TTransformer.Create(checkpoint_path, ctx_length);
-  Tokenizer   := TTokenizer.Create(checkpoint_path, transformer.config.vocab_size, enable_thinking = 1);
-  Sampler := TSampler.create(transformer.config.vocab_size, temperature, topp, rng_seed);
+  transformer := TTransformer.Create(checkpoint_path, ctx_length);
+  tokenizer := TTokenizer.Create(checkpoint_path, transformer.config.vocab_size, enable_thinking = 1);
+  sampler := TSampler.Create(transformer.config.vocab_size, temperature, topp, rng_seed);
 
 
   // Print model info if no prompt

@@ -15,11 +15,7 @@ uses
   Tokenizer_Unit,
   Tensor_Unit;
 
-const
-  PROMPT_BUFFER_SIZE = 32768;
-
 type
-
   { Configuration structure }
   TConfig = record
     magic_number: longint;
@@ -88,8 +84,8 @@ type
     constructor Create(checkpoint_path: string; ctx_length: longint);
     destructor Destroy; override;
     function Forward(token: longint; pos: longint): PSingle;
-    procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
-    procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
+    procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: PChar);
+    procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: PChar; system_prompt: PChar);
   end;
 
 implementation
@@ -110,29 +106,30 @@ var
   var
     TokenTableSize: integer;
   begin
-    TokenTableSize := Config.vocab_size * Config.dim;
+    TokenTableSize := config.vocab_size * config.dim;
 
     // Initialize quantized token embeddings (single tensor)
-    GetMem(Weights.q_tokens, SizeOf(TInt8QuantizedTensor));
-    Weights.q_tokens^.q := PShortInt(BytePtr);
+    GetMem(weights.q_tokens, SizeOf(TInt8QuantizedTensor));
+    weights.q_tokens^.q := PShortInt(BytePtr);
     Inc(BytePtr, TokenTableSize * SizeOf(shortint));
-    Weights.q_tokens^.s := PSingle(BytePtr);
-    Inc(BytePtr, (TokenTableSize div GS) * SizeOf(single));
+    weights.q_tokens^.s := PSingle(BytePtr);
+    Inc(BytePtr, (TokenTableSize div config.group_size) * SizeOf(single));
+    weights.q_tokens^.group_size := config.group_size;
 
     // Allocate and dequantize token embedding table
-    GetMem(Weights.token_embedding_table, TokenTableSize * SizeOf(single));
-    Weights.q_tokens^.Dequantize(Weights.token_embedding_table, TokenTableSize);
+    GetMem(weights.token_embedding_table, TokenTableSize * SizeOf(single));
+    weights.q_tokens^.Dequantize(weights.token_embedding_table, TokenTableSize);
   end;
 
 begin
   FloatPtr := PSingle(DataPtr);
 
   // Map float weights in order
-  AllocateFloatWeights(Weights.rms_att_weight, Config.n_layers * Config.dim);
-  AllocateFloatWeights(Weights.rms_ffn_weight, Config.n_layers * Config.dim);
-  AllocateFloatWeights(Weights.rms_final_weight, Config.dim);
-  AllocateFloatWeights(Weights.q_norm_weights, Config.n_layers * Config.head_dim);
-  AllocateFloatWeights(Weights.k_norm_weights, Config.n_layers * Config.head_dim);
+  AllocateFloatWeights(weights.rms_att_weight, config.n_layers * config.dim);
+  AllocateFloatWeights(weights.rms_ffn_weight, config.n_layers * config.dim);
+  AllocateFloatWeights(weights.rms_final_weight, config.dim);
+  AllocateFloatWeights(weights.q_norm_weights, config.n_layers * config.head_dim);
+  AllocateFloatWeights(weights.k_norm_weights, config.n_layers * config.head_dim);
 
   // Switch to byte pointer for quantized data
   BytePtr := pbyte(FloatPtr);
@@ -141,38 +138,38 @@ begin
   AllocateAndDequantizeTokens;
 
   // Map quantized weight matrices
-  with Config do
+  with config do
   begin
     // Initialize arrays using the new type methods
-    Weights.wq.Initialize(n_layers, Pointer(BytePtr), dim * (n_heads * head_dim));
-    Weights.wk.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim));
-    Weights.wv.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim));
-    Weights.wo.Initialize(n_layers, Pointer(BytePtr), (n_heads * head_dim) * dim);
+    weights.wq.Initialize(n_layers, Pointer(BytePtr), dim * (n_heads * head_dim), group_size);
+    weights.wk.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim), group_size);
+    weights.wv.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim), group_size);
+    weights.wo.Initialize(n_layers, Pointer(BytePtr), (n_heads * head_dim) * dim, group_size);
 
     // Feed-forward network weights
-    Weights.w1.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim);
-    Weights.w2.Initialize(n_layers, Pointer(BytePtr), hidden_dim * dim);
-    Weights.w3.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim);
+    weights.w1.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim, group_size);
+    weights.w2.Initialize(n_layers, Pointer(BytePtr), hidden_dim * dim, group_size);
+    weights.w3.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim, group_size);
 
     // Validate all tensor arrays
-    Weights.wq.Validate;
-    Weights.wk.Validate;
-    Weights.wv.Validate;
-    Weights.wo.Validate;
-    Weights.w1.Validate;
-    Weights.w2.Validate;
-    Weights.w3.Validate;
+    weights.wq.Validate;
+    weights.wk.Validate;
+    weights.wv.Validate;
+    weights.wo.Validate;
+    weights.w1.Validate;
+    weights.w2.Validate;
+    weights.w3.Validate;
 
     // Classifier weights (shared or separate)
     if shared_classifier = 1 then
-      Weights.wcls := Weights.q_tokens
+      weights.wcls := weights.q_tokens
     else
     begin
-      GetMem(Weights.wcls, SizeOf(TInt8QuantizedTensor));
-      Weights.wcls^.q := PShortInt(BytePtr);
+      GetMem(weights.wcls, SizeOf(TInt8QuantizedTensor));
+      weights.wcls^.q := PShortInt(BytePtr);
       Inc(BytePtr, dim * vocab_size * SizeOf(shortint));
-      Weights.wcls^.s := PSingle(BytePtr);
-      Inc(BytePtr, (dim * vocab_size div GS) * SizeOf(single));
+      weights.wcls^.s := PSingle(BytePtr);
+      Inc(BytePtr, (dim * vocab_size div group_size) * SizeOf(single));
     end;
   end;
 
@@ -194,9 +191,11 @@ begin
   s.hb2 := AllocMem(p.hidden_dim * SizeOf(single));
 
   s.xq.q := AllocMem(all_heads_dim * SizeOf(shortint));
-  s.xq.s := AllocMem((all_heads_dim div GS) * SizeOf(single));
+  s.xq.s := AllocMem((all_heads_dim div p.group_size) * SizeOf(single));
+  s.xq.group_size := p.group_size;
   s.hq.q := AllocMem(p.hidden_dim * SizeOf(shortint));
-  s.hq.s := AllocMem((p.hidden_dim div GS) * SizeOf(single));
+  s.hq.s := AllocMem((p.hidden_dim div p.group_size) * SizeOf(single));
+  s.hq.group_size := p.group_size;
 
   s.q := AllocMem(all_heads_dim * SizeOf(single));
   s.att := AllocMem(p.n_heads * p.seq_len * SizeOf(single));
@@ -254,7 +253,6 @@ begin
     if (ctx_length <> 0) and (ctx_length <= config.seq_len) then
       config.seq_len := ctx_length;
 
-    GS := config.group_size;
     weights_ptr := PChar(Data) + 256;
     MapWeightsToMemory(weights_ptr);
   finally
@@ -263,18 +261,18 @@ begin
 end;
 
 { RMS Normalization }
-procedure RMSNorm(const o, x, weight: PSingle; size: longint);
+procedure RMSNorm(const o, x, weight: PSingle; Size: longint);
 var
   ss: single;
   j: longint;
 begin
   ss := 0;
-  for j := 0 to size - 1 do
+  for j := 0 to Size - 1 do
     ss += (x + j)^ ** 2;
 
-  ss := 1.0 / Sqrt((ss / size) + 1e-6);
+  ss := 1.0 / Sqrt((ss / Size) + 1e-6);
 
-  for j := 0 to size - 1 do
+  for j := 0 to Size - 1 do
     (o + j)^ := (weight + j)^ * (ss * (x + j)^);
 end;
 
@@ -315,8 +313,8 @@ procedure ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim, pos: longint
 var
   j: longint;
   pfreq, cos_freq, sin_freq, x_val, y_val: single;
-  head_dim_half : single;
-  head_dim_half_int : longint;
+  head_dim_half: single;
+  head_dim_half_int: longint;
 begin
   head_dim_half := head_dim / 2;
   head_dim_half_int := head_dim div 2;
@@ -335,9 +333,9 @@ begin
   end;
 end;
 
-procedure VectorMulAdd(dst, src: PSingle; scalar: Single; dim: Integer);
+procedure VectorMulAdd(dst, src: PSingle; scalar: single; dim: integer);
 var
-  i: Integer;
+  i: integer;
 begin
   for i := 0 to dim - 1 do
     (dst + i)^ := (dst + i)^ + scalar * (src + i)^;
@@ -523,7 +521,7 @@ begin
     if pos < num_prompt_tokens - 1 then
       Next := (prompt_tokens + pos + 1)^
     else
-      Next := Sampler.Sample(logits);
+      Next := sampler.Sample(logits);
 
     Inc(pos);
 
@@ -542,7 +540,7 @@ begin
       end;
 
       // Output token and count it
-      Write(Tokenizer.Decode(Next));
+      Write(tokenizer.Decode(Next));
       Flush(Output);
       Inc(tokens_generated);
     end
@@ -551,7 +549,7 @@ begin
       // Still processing prompt tokens - output them only if requested
       if output_prompt then
       begin
-        Write(Tokenizer.Decode(token));
+        Write(tokenizer.Decode(token));
         Flush(Output);
       end;
     end;
@@ -583,14 +581,18 @@ begin
   Result := pos; // Return final position
 end;
 
+
+const
+  PROMPT_BUFFER_SIZE = 32768;
+
 // Simplified Generate method using GenerateFromTokens
-procedure TTransformer.Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
+procedure TTransformer.Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: PChar);
 var
   user_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
   num_prompt_tokens: longint;
   prompt_tokens: PLongInt;
   temp_str: string;
-  input_prompt: pchar;
+  input_prompt: PChar;
 begin
   GetMem(prompt_tokens, PROMPT_BUFFER_SIZE * SizeOf(longint));
   num_prompt_tokens := 0;
@@ -615,7 +617,7 @@ begin
   end;
 
   // Encode prompt as-is (no template)
-  Tokenizer.Encode(input_prompt, prompt_tokens, num_prompt_tokens);
+  tokenizer.Encode(input_prompt, prompt_tokens, num_prompt_tokens);
 
   if num_prompt_tokens < 1 then
   begin
@@ -631,7 +633,7 @@ begin
 end;
 
 // Simplified Chat method using GenerateFromTokens
-procedure TTransformer.Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: pchar; system_prompt: pchar);
+procedure TTransformer.Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: PChar; system_prompt: PChar);
 var
   user_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
   rendered_prompt: array[0..PROMPT_BUFFER_SIZE - 1] of char;
@@ -691,7 +693,7 @@ begin
       end;
 
       // Encode prompt
-      Tokenizer.Encode(@rendered_prompt[0], prompt_tokens, num_prompt_tokens);
+      tokenizer.Encode(@rendered_prompt[0], prompt_tokens, num_prompt_tokens);
       user_turn := 0;
 
       // Generate response using shared function
