@@ -34,38 +34,38 @@ type
 
   { Transformer weights }
   TTransformerWeights = record
-    q_tokens: PInt8QuantizedTensor;
-    token_embedding_table: PSingle;
-    rms_att_weight: PSingle;
-    rms_ffn_weight: PSingle;
-    wq: TInt8QuantizedTensorArray;
-    wk: TInt8QuantizedTensorArray;
-    wv: TInt8QuantizedTensorArray;
-    wo: TInt8QuantizedTensorArray;
-    q_norm_weights: PSingle;
-    k_norm_weights: PSingle;
-    w1: TInt8QuantizedTensorArray;
-    w2: TInt8QuantizedTensorArray;
-    w3: TInt8QuantizedTensorArray;
-    rms_final_weight: PSingle;
-    wcls: PInt8QuantizedTensor;
+    q_tokens: PInt8QuantizedTensor;           // Quantized token embedding tensor (vocab_size x dim)
+    token_embedding_table: PSingle;           // Dequantized token embedding table (vocab_size x dim)
+    rms_att_weight: PSingle;                  // RMSNorm weights for attention layers (n_layers x dim)
+    rms_ffn_weight: PSingle;                  // RMSNorm weights for FFN layers (n_layers x dim)
+    wq: TInt8QuantizedTensorArray;            // Quantized weight matrices for Q projection (n_layers x dim x (n_heads x head_dim))
+    wk: TInt8QuantizedTensorArray;            // Quantized weight matrices for K projection (n_layers x dim x (n_kv_heads x head_dim))
+    wv: TInt8QuantizedTensorArray;            // Quantized weight matrices for V projection (n_layers x dim x (n_kv_heads x head_dim))
+    wo: TInt8QuantizedTensorArray;            // Quantized weight matrices for output projection (n_layers x (n_heads x head_dim) x dim)
+    q_norm_weights: PSingle;                  // RMSNorm weights for Q heads (n_layers x head_dim)
+    k_norm_weights: PSingle;                  // RMSNorm weights for K heads (n_layers x head_dim)
+    w1: TInt8QuantizedTensorArray;            // Quantized weight matrices for FFN first layer (n_layers x dim x hidden_dim)
+    w2: TInt8QuantizedTensorArray;            // Quantized weight matrices for FFN second layer (n_layers x hidden_dim x dim)
+    w3: TInt8QuantizedTensorArray;            // Quantized weight matrices for FFN gate layer (n_layers x dim x hidden_dim)
+    rms_final_weight: PSingle;                // RMSNorm weights for final normalization (dim)
+    wcls: PInt8QuantizedTensor;               // Quantized classifier weights (dim x vocab_size) or shared with q_tokens
   end;
 
   { Run state }
   TRunState = record
-    x: PSingle;
-    xb: PSingle;
-    hb: PSingle;
-    hb2: PSingle;
-    xq: TInt8QuantizedTensor;
-    hq: TInt8QuantizedTensor;
-    q: PSingle;
-    k: PSingle;
-    v: PSingle;
-    att: PSingle;
-    logits: PSingle;
-    key_cache: PSingle;
-    value_cache: PSingle;
+    x: PSingle;           // Current hidden state (dim)
+    xb: PSingle;          // Buffer for intermediate hidden state (varies)
+    hb: PSingle;          // Buffer for FFN hidden state (hidden_dim)
+    hb2: PSingle;         // Buffer for FFN gate (hidden_dim)
+    xq: TInt8QuantizedTensor; // Quantized buffer for hidden state (for matmuls)
+    hq: TInt8QuantizedTensor; // Quantized buffer for FFN hidden state
+    q: PSingle;           // Query vector (n_heads x head_dim)
+    k: PSingle;           // Key vector (n_kv_heads x head_dim)
+    v: PSingle;           // Value vector (n_kv_heads x head_dim)
+    att: PSingle;         // Attention scores (n_heads x seq_len)
+    logits: PSingle;      // Output logits (vocab_size)
+    key_cache: PSingle;   // Cached keys for all layers (n_layers x seq_len x n_kv_heads x head_dim)
+    value_cache: PSingle; // Cached values for all layers (n_layers x seq_len x n_kv_heads x head_dim)
   end;
 
   { Transformer structure }
@@ -150,15 +150,6 @@ begin
     weights.w1.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim, group_size);
     weights.w2.Initialize(n_layers, Pointer(BytePtr), hidden_dim * dim, group_size);
     weights.w3.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim, group_size);
-
-    // Validate all tensor arrays
-    weights.wq.Validate;
-    weights.wk.Validate;
-    weights.wv.Validate;
-    weights.wo.Validate;
-    weights.w1.Validate;
-    weights.w2.Validate;
-    weights.w3.Validate;
 
     // Classifier weights (shared or separate)
     if shared_classifier = 1 then

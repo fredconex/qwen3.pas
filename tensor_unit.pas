@@ -114,6 +114,8 @@ begin
 
   // Update the input pointer to point past all processed data
   DataPtr := CurrentPtr;
+
+  Validate;
 end;
 
 function TInt8QuantizedTensorArray.GetTensor(Index: integer): TInt8QuantizedTensor;
