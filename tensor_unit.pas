@@ -38,9 +38,6 @@ type
     procedure Validate; // Validates that all tensors have valid pointers
   end;
 
-{ Memory allocation helpers }
-function SafeGetMem(Size: PtrUInt): Pointer;
-
 { Matrix multiplication for quantized tensors }
 function Int8_DotProduct64_AVX2(const x_base, w_base: PShortInt): LongInt; assembler;
 function Int8_DotProduct(const x_base, w_base: PShortInt): LongInt;
@@ -166,18 +163,6 @@ begin
       Halt(1);
     end;
   end;
-end;
-
-{ Memory allocation helpers }
-function SafeGetMem(Size: PtrUInt): Pointer;
-begin
-  GetMem(Result, Size);
-  if Result = nil then
-  begin
-    WriteLn(StdErr, 'Memory allocation failed!');
-    Halt(1);
-  end;
-  FillChar(Result^, Size, 0);
 end;
 
 { Matrix multiplication }
