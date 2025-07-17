@@ -96,9 +96,9 @@ begin
     topp := 0.9;
 
   // Build
-  Transformer.Build(checkpoint_path, ctx_length);
-  Tokenizer.Build(checkpoint_path, transformer.config.vocab_size, enable_thinking = 1);
-  Sampler.build(transformer.config.vocab_size, temperature, topp, rng_seed);
+  Transformer := TTransformer.Create(checkpoint_path, ctx_length);
+  Tokenizer   := TTokenizer.Create(checkpoint_path, transformer.config.vocab_size, enable_thinking = 1);
+  Sampler := TSampler.create(transformer.config.vocab_size, temperature, topp, rng_seed);
 
 
   // Print model info if no prompt

@@ -73,16 +73,16 @@ type
   end;
 
   { Transformer structure }
-  TTransformer = record
+  TTransformer = class
+  public
     config: TConfig;
     weights: TTransformerWeights;
     state: TRunState;
     Data: Pointer;
     file_size: int64;
 
-    // Methods
-    procedure Build(checkpoint_path: string; ctx_length: longint);
-    procedure Free;
+    constructor Create(checkpoint_path: string; ctx_length: longint);
+    destructor Destroy; override;
     function Forward(token: longint; pos: longint): PSingle;
     function GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
     procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: pchar);
@@ -185,21 +185,21 @@ begin
   all_heads_dim := p.n_heads * p.head_dim;
   kv_dim := p.n_kv_heads * p.head_dim;
 
-  s.x := SafeGetMem(p.dim * SizeOf(single));
-  s.xb := SafeGetMem(all_heads_dim * SizeOf(single));
-  s.hb := SafeGetMem(p.hidden_dim * SizeOf(single));
-  s.hb2 := SafeGetMem(p.hidden_dim * SizeOf(single));
+  s.x := AllocMem(p.dim * SizeOf(single));
+  s.xb := AllocMem(all_heads_dim * SizeOf(single));
+  s.hb := AllocMem(p.hidden_dim * SizeOf(single));
+  s.hb2 := AllocMem(p.hidden_dim * SizeOf(single));
 
-  s.xq.q := SafeGetMem(all_heads_dim * SizeOf(shortint));
-  s.xq.s := SafeGetMem((all_heads_dim div GS) * SizeOf(single));
-  s.hq.q := SafeGetMem(p.hidden_dim * SizeOf(shortint));
-  s.hq.s := SafeGetMem((p.hidden_dim div GS) * SizeOf(single));
+  s.xq.q := AllocMem(all_heads_dim * SizeOf(shortint));
+  s.xq.s := AllocMem((all_heads_dim div GS) * SizeOf(single));
+  s.hq.q := AllocMem(p.hidden_dim * SizeOf(shortint));
+  s.hq.s := AllocMem((p.hidden_dim div GS) * SizeOf(single));
 
-  s.q := SafeGetMem(all_heads_dim * SizeOf(single));
-  s.att := SafeGetMem(p.n_heads * p.seq_len * SizeOf(single));
-  s.logits := SafeGetMem(p.vocab_size * SizeOf(single));
-  s.key_cache := SafeGetMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
-  s.value_cache := SafeGetMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
+  s.q := AllocMem(all_heads_dim * SizeOf(single));
+  s.att := AllocMem(p.n_heads * p.seq_len * SizeOf(single));
+  s.logits := AllocMem(p.vocab_size * SizeOf(single));
+  s.key_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
+  s.value_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
 end;
 
 { Free run state }
@@ -289,13 +289,13 @@ begin
 end;
 
 { TTransformer method implementations }
-procedure TTransformer.Build(checkpoint_path: string; ctx_length: longint);
+constructor TTransformer.Create(checkpoint_path: string; ctx_length: longint);
 begin
   ReadCheckpoint(checkpoint_path, self.config, self.weights, self.Data, self.file_size, ctx_length);
   MallocRunState(self.state, self.config);
 end;
 
-procedure TTransformer.Free;
+destructor TTransformer.Destroy;
 begin
   FreeMem(self.weights.q_tokens);
   FreeMem(self.weights.token_embedding_table);
@@ -304,6 +304,7 @@ begin
     FreeMem(self.weights.wcls);
   FreeMem(self.Data);
   FreeRunState(self.state);
+  inherited Destroy;
 end;
 
 { Helper function to apply rotary positional embeddings }

@@ -25,7 +25,8 @@ type
   PProbIndex = ^TProbIndex;
 
   { Tokenizer }
-  TTokenizer = record
+  TTokenizer = class
+  public
     vocab: PPChar;
     vocab_map: TVocabMap;
     merge_scores: PSingle;
@@ -35,26 +36,27 @@ type
     eos_token_id: longword;
     prompt_template: array[0..1023] of char;
     system_prompt_template: array[0..1023] of char;
-    
-    { Tokenizer methods }
+
+    constructor Create(checkpoint_path: string; _vocab_size: longint; enable_thinking: boolean);
+    destructor Destroy; override;
     procedure LoadPromptTemplate(var out_template: array of char; with_system_prompt: boolean; enable_thinking: boolean);
-    procedure Build(checkpoint_path: string; _vocab_size: longint; enable_thinking: boolean);
-    procedure Free;
     function Decode(token: longint): pchar;
     procedure Encode(Text: pchar; tokens: PLongInt; var n_tokens: longint);
     function LookupToken(str: pchar): longint;
   end;
 
   { Sampler }
-  TSampler = record
+  TSampler = class
+  public
     vocab_size: longint;
     probindex: PProbIndex;
     temperature: single;
     topp: single;
     rng_state: QWord;
-    procedure Build(_vocab_size: longint; _temperature: single; _topp: single; rng_seed: QWord);
+
+    constructor Create(_vocab_size: longint; _temperature: single; _topp: single; rng_seed: QWord);
+    destructor Destroy; override;
     function Sample(logits: PSingle): longint;
-    procedure Free;
   end;
 
 { Tokenizer functions }
@@ -108,7 +110,7 @@ begin
     out_template[i - 1] := template_content[i];
 end;
 
-procedure TTokenizer.Build(checkpoint_path: string; _vocab_size: longint; enable_thinking: boolean);
+constructor TTokenizer.Create(checkpoint_path: string; _vocab_size: longint; enable_thinking: boolean);
 var
   tokenizer_path: string;
   f: file;
@@ -161,7 +163,7 @@ begin
   Self.LoadPromptTemplate(Self.system_prompt_template, True, enable_thinking);
 end;
 
-procedure TTokenizer.Free;
+destructor TTokenizer.Destroy;
 var
   i: longint;
 begin
@@ -173,6 +175,7 @@ begin
   // Free hashmap
   if Assigned(Self.vocab_map) then
     Self.vocab_map.Free;
+  inherited Destroy;
 end;
 
 function TTokenizer.Decode(token: longint): pchar;
@@ -462,7 +465,7 @@ begin
 end;
 
 { Build sampler }
-procedure TSampler.Build(_vocab_size: longint; _temperature: single; _topp: single; rng_seed: QWord);
+constructor TSampler.Create(_vocab_size: longint; _temperature: single; _topp: single; rng_seed: QWord);
 begin
   self.vocab_size := _vocab_size;
   self.temperature := _temperature;
@@ -471,10 +474,10 @@ begin
   GetMem(self.probindex, _vocab_size * SizeOf(TProbIndex));
 end;
 
-{ Free sampler }
-procedure TSampler.Free;
+destructor TSampler.Destroy;
 begin
   FreeMem(self.probindex);
+  inherited Destroy;
 end;
 
 { Sample function }
