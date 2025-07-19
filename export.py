@@ -246,39 +246,6 @@ def build_tokenizer(model, file):
 
     print(f"Written tokenizer model to {file}.tokenizer")
 
-def build_prompts(model, file):
-    # Compile the template
-    template = Template(model.tokenizer.chat_template)
-
-    # Render the templates and write out the prompts
-
-    messages = [
-        {"role": "user", "content": "%s"}
-    ]
-
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=False)
-    with open(file + '.template', 'w', encoding='utf-8', newline='') as f:
-        f.write(rendered_prompt)
-
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=True)
-    with open(file + '.template.with-thinking', 'w', encoding='utf-8', newline='') as f:
-        f.write(rendered_prompt)
-
-    messages = [
-        {"role": "system", "content": "%s"},
-        {"role": "user", "content": "%s"}
-    ]
-
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=False)
-    with open(file + '.template.with-system', 'w', encoding='utf-8', newline='') as f:
-        f.write(rendered_prompt)
-
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=True)
-    with open(file + '.template.with-system-and-thinking', 'w', encoding='utf-8', newline='') as f:
-        f.write(rendered_prompt)
-
-    print(f"Written prompt templates to {file}.template.*")
-
 # -----------------------------------------------------------------------------
 # Load / import functions
 
@@ -377,5 +344,4 @@ if __name__ == "__main__":
 
     # export
     build_tokenizer(model, args.filepath)
-    build_prompts(model, args.filepath)
     model_export(model, args.filepath)
