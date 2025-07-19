@@ -72,8 +72,19 @@ type
   TTransformer = class
   private
     procedure MapWeightsToMemory(var DataPtr: Pointer);
+    procedure MallocRunState(var s: TRunState; var p: TConfig);
+    procedure FreeRunState(var s: TRunState);
     procedure LoadFromFile(checkpoint: string; ctx_length: longint);
     function GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
+
+    procedure ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim, pos: longint);
+    procedure ProcessAttentionLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, pos: longint);
+    procedure ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l: longint);
+    procedure ApplyResidualConnection(const x, xb: PSingle; const dim: longint);
+    procedure ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig);
+    procedure RMSNorm(const o, x, weight: PSingle; Size: longint);
+    function Sigmoid(const x: single): single;
+    procedure SwiGLU(var hb, hb2: PSingle; hidden_dim: longint);
   public
     config: TConfig;
     weights: TTransformerWeights;
@@ -168,51 +179,6 @@ begin
   DataPtr := BytePtr;
 end;
 
-{ Allocate run state }
-procedure MallocRunState(var s: TRunState; var p: TConfig);
-var
-  all_heads_dim, kv_dim: longint;
-begin
-  all_heads_dim := p.n_heads * p.head_dim;
-  kv_dim := p.n_kv_heads * p.head_dim;
-
-  s.x := AllocMem(p.dim * SizeOf(single));
-  s.xb := AllocMem(all_heads_dim * SizeOf(single));
-  s.hb := AllocMem(p.hidden_dim * SizeOf(single));
-  s.hb2 := AllocMem(p.hidden_dim * SizeOf(single));
-
-  s.xq.q := AllocMem(all_heads_dim * SizeOf(shortint));
-  s.xq.s := AllocMem((all_heads_dim div p.group_size) * SizeOf(single));
-  s.xq.group_size := p.group_size;
-  s.hq.q := AllocMem(p.hidden_dim * SizeOf(shortint));
-  s.hq.s := AllocMem((p.hidden_dim div p.group_size) * SizeOf(single));
-  s.hq.group_size := p.group_size;
-
-  s.q := AllocMem(all_heads_dim * SizeOf(single));
-  s.att := AllocMem(p.n_heads * p.seq_len * SizeOf(single));
-  s.logits := AllocMem(p.vocab_size * SizeOf(single));
-  s.key_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
-  s.value_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
-end;
-
-{ Free run state }
-procedure FreeRunState(var s: TRunState);
-begin
-  FreeMem(s.x);
-  FreeMem(s.xb);
-  FreeMem(s.hb);
-  FreeMem(s.hb2);
-  FreeMem(s.xq.q);
-  FreeMem(s.xq.s);
-  FreeMem(s.hq.q);
-  FreeMem(s.hq.s);
-  FreeMem(s.q);
-  FreeMem(s.att);
-  FreeMem(s.logits);
-  FreeMem(s.key_cache);
-  FreeMem(s.value_cache);
-end;
-
 { Read checkpoint }
 procedure TTransformer.LoadFromFile(checkpoint: string; ctx_length: longint);
 var
@@ -251,35 +217,6 @@ begin
   end;
 end;
 
-{ RMS Normalization }
-procedure RMSNorm(const o, x, weight: PSingle; Size: longint);
-var
-  ss: single;
-  j: longint;
-begin
-  ss := 0;
-  for j := 0 to Size - 1 do
-    ss += (x + j)^ ** 2;
-
-  ss := 1.0 / Sqrt((ss / Size) + 1e-6);
-
-  for j := 0 to Size - 1 do
-    (o + j)^ := (weight + j)^ * (ss * (x + j)^);
-end;
-
-function Sigmoid(const x: single): single; inline;
-begin
-  Result := 1.0 / (1.0 + Exp(-x));
-end;
-
-procedure SwiGLU(var hb, hb2: PSingle; hidden_dim: longint);
-var
-  i: longint;
-begin
-  for i := 0 to hidden_dim - 1 do
-    (hb + i)^ *= Sigmoid((hb + i)^) * (hb2 + i)^;
-end;
-
 { TTransformer method implementations }
 constructor TTransformer.Create(checkpoint_path: string; ctx_length: longint);
 begin
@@ -297,151 +234,6 @@ begin
   FreeMem(self.Data);
   FreeRunState(self.state);
   inherited Destroy;
-end;
-
-{ Helper function to apply rotary positional embeddings }
-procedure ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim, pos: longint);
-var
-  j: longint;
-  pfreq, cos_freq, sin_freq, x_val, y_val: single;
-  head_dim_half: single;
-  head_dim_half_int: longint;
-begin
-  head_dim_half := head_dim / 2;
-  head_dim_half_int := head_dim div 2;
-
-  for j := 0 to head_dim_half_int - 1 do
-  begin
-    pfreq := pos * Power(1e6, -j / head_dim_half);
-    cos_freq := Cos(pfreq);
-    sin_freq := Sin(pfreq);
-
-    x_val := (ptr + j)^;
-    y_val := (ptr + j + head_dim_half_int)^;
-
-    (ptr + j)^ := x_val * cos_freq - y_val * sin_freq;
-    (ptr + j + head_dim_half_int)^ := x_val * sin_freq + y_val * cos_freq;
-  end;
-end;
-
-procedure VectorMulAdd(dst, src: PSingle; scalar: single; dim: integer);
-var
-  i: integer;
-begin
-  for i := 0 to dim - 1 do
-    (dst + i)^ := (dst + i)^ + scalar * (src + i)^;
-end;
-
-{ Helper function to process attention layer }
-procedure ProcessAttentionLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, pos: longint);
-var
-  kv_dim, kv_mul, all_heads_dim: longint;
-  loff: QWord;
-  h, t: longint;
-  att_ptr, q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
-begin
-  kv_dim := p.n_kv_heads * p.head_dim;
-  kv_mul := p.n_heads div p.n_kv_heads;
-  all_heads_dim := p.n_heads * p.head_dim;
-  loff := l * QWord(p.seq_len) * kv_dim;
-
-  s.k := s.key_cache + loff + pos * kv_dim;
-  s.v := s.value_cache + loff + pos * kv_dim;
-
-  // Attention RMS norm
-  RMSNorm(s.xb, s.x, w.rms_att_weight + l * p.dim, p.dim);
-
-  // QKV matmuls
-  s.xq.Quantize(s.xb, p.dim);
-  s.xq.MatMul(s.q, w.wq.GetTensor(l), p.dim, all_heads_dim);
-  s.xq.MatMul(s.k, w.wk.GetTensor(l), p.dim, kv_dim);
-  s.xq.MatMul(s.v, w.wv.GetTensor(l), p.dim, kv_dim);
-
-  // Q-RMSNorm + rotate each query head
-  for h := 0 to p.n_heads - 1 do
-  begin
-    q_ptr := s.q + h * p.head_dim;
-    RMSNorm(q_ptr, q_ptr, w.q_norm_weights + l * p.head_dim, p.head_dim);
-    ApplyRotaryEmbeddings(q_ptr, p.head_dim, pos);
-  end;
-
-  // K-RMSNorm + rotate each key head
-  for h := 0 to p.n_kv_heads - 1 do
-  begin
-    k_ptr := s.k + h * p.head_dim;
-    RMSNorm(k_ptr, k_ptr, w.k_norm_weights + l * p.head_dim, p.head_dim);
-    ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
-  end;
-
-  // Multihead attention - optimized
-  for h := 0 to p.n_heads - 1 do
-  begin
-    q_ptr := s.q + h * p.head_dim;
-    att_ptr := s.att + h * p.seq_len;
-
-    // Compute all attention scores for this head
-    for t := 0 to pos do
-    begin
-      k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
-      (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) / Sqrt(p.head_dim);
-    end;
-
-    // Apply softmax
-    Softmax(att_ptr, pos + 1);
-
-    // Compute weighted sum of values
-    xb_ptr := s.xb + h * p.head_dim;
-    FillChar(xb_ptr^, p.head_dim * SizeOf(single), 0);
-
-    for t := 0 to pos do
-    begin
-      v_ptr := s.value_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
-      VectorMulAdd(xb_ptr, v_ptr, (att_ptr + t)^, p.head_dim);
-    end;
-  end;
-
-  // Final attention matmul
-  s.xq.Quantize(s.xb, all_heads_dim);
-  s.xq.MatMul(s.xb, w.wo.GetTensor(l), all_heads_dim, p.dim);
-end;
-
-{ Helper function to process feed-forward network layer }
-procedure ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l: longint);
-begin
-  // FFN RMS norm
-  RMSNorm(s.xb, s.x, w.rms_ffn_weight + l * p.dim, p.dim);
-
-  // FFN
-  s.xq.Quantize(s.xb, p.dim);
-  s.xq.MatMul(s.hb, w.w1.GetTensor(l), p.dim, p.hidden_dim);
-  s.xq.MatMul(s.hb2, w.w3.GetTensor(l), p.dim, p.hidden_dim);
-
-  // SwiGLU
-  SwiGLU(s.hb, s.hb2, p.hidden_dim);
-
-  // Final FFN matmul
-  s.hq.Quantize(s.hb, p.hidden_dim);
-  s.hq.MatMul(s.xb, w.w2.GetTensor(l), p.hidden_dim, p.dim);
-end;
-
-{ Helper function to apply residual connections }
-procedure ApplyResidualConnection(const x, xb: PSingle; const dim: longint);
-var
-  i: longint;
-begin
-  for i := 0 to dim - 1 do
-    (x + i)^ := (x + i)^ + (xb + i)^;
-end;
-
-{ Helper function to process final layer }
-procedure ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig);
-begin
-  // Final RMS norm
-  RMSNorm(s.x, s.x, w.rms_final_weight, p.dim);
-
-  // Classifier
-  s.xq.Quantize(s.x, p.dim);
-  s.xq.MatMul(s.logits, w.wcls^, p.dim, p.vocab_size);
 end;
 
 function TTransformer.Forward(token: longint; pos: longint): PSingle;
@@ -697,4 +489,181 @@ begin
   FreeMem(prompt_tokens);
 end;
 
+// --- Begin TTransformer helper method implementations ---
+procedure TTransformer.RMSNorm(const o, x, weight: PSingle; Size: longint);
+var
+  ss: single;
+  j: longint;
+begin
+  ss := 0;
+  for j := 0 to Size - 1 do
+    ss += (x + j)^ ** 2;
+  ss := 1.0 / Sqrt((ss / Size) + 1e-6);
+  for j := 0 to Size - 1 do
+    (o + j)^ := (weight + j)^ * (ss * (x + j)^);
+end;
+
+function TTransformer.Sigmoid(const x: single): single;
+begin
+  Result := 1.0 / (1.0 + Exp(-x));
+end;
+
+procedure TTransformer.SwiGLU(var hb, hb2: PSingle; hidden_dim: longint);
+var
+  i: longint;
+begin
+  for i := 0 to hidden_dim - 1 do
+    (hb + i)^ := (hb + i)^ * self.Sigmoid((hb + i)^) * (hb2 + i)^;
+end;
+
+procedure TTransformer.ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim, pos: longint);
+var
+  j: longint;
+  pfreq, cos_freq, sin_freq, x_val, y_val: single;
+  head_dim_half: single;
+  head_dim_half_int: longint;
+begin
+  head_dim_half := head_dim / 2;
+  head_dim_half_int := head_dim div 2;
+  for j := 0 to head_dim_half_int - 1 do
+  begin
+    pfreq := pos * Power(1e6, -j / head_dim_half);
+    cos_freq := Cos(pfreq);
+    sin_freq := Sin(pfreq);
+    x_val := (ptr + j)^;
+    y_val := (ptr + j + head_dim_half_int)^;
+    (ptr + j)^ := x_val * cos_freq - y_val * sin_freq;
+    (ptr + j + head_dim_half_int)^ := x_val * sin_freq + y_val * cos_freq;
+  end;
+end;
+
+procedure TTransformer.ProcessAttentionLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, pos: longint);
+var
+  kv_dim, kv_mul, all_heads_dim: longint;
+  loff: QWord;
+  i, h, t: longint;
+  att_ptr, q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
+begin
+  kv_dim := p.n_kv_heads * p.head_dim;
+  kv_mul := p.n_heads div p.n_kv_heads;
+  all_heads_dim := p.n_heads * p.head_dim;
+  loff := l * QWord(p.seq_len) * kv_dim;
+  s.k := s.key_cache + loff + pos * kv_dim;
+  s.v := s.value_cache + loff + pos * kv_dim;
+  // Attention RMS norm
+  self.RMSNorm(s.xb, s.x, w.rms_att_weight + l * p.dim, p.dim);
+  // QKV matmuls
+  s.xq.Quantize(s.xb, p.dim);
+  s.xq.MatMul(s.q, w.wq.GetTensor(l), p.dim, all_heads_dim);
+  s.xq.MatMul(s.k, w.wk.GetTensor(l), p.dim, kv_dim);
+  s.xq.MatMul(s.v, w.wv.GetTensor(l), p.dim, kv_dim);
+  // Q-RMSNorm + rotate each query head
+  for h := 0 to p.n_heads - 1 do
+  begin
+    q_ptr := s.q + h * p.head_dim;
+    self.RMSNorm(q_ptr, q_ptr, w.q_norm_weights + l * p.head_dim, p.head_dim);
+    self.ApplyRotaryEmbeddings(q_ptr, p.head_dim, pos);
+  end;
+  // K-RMSNorm + rotate each key head
+  for h := 0 to p.n_kv_heads - 1 do
+  begin
+    k_ptr := s.k + h * p.head_dim;
+    self.RMSNorm(k_ptr, k_ptr, w.k_norm_weights + l * p.head_dim, p.head_dim);
+    self.ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
+  end;
+  // Multihead attention - optimized
+  for h := 0 to p.n_heads - 1 do
+  begin
+    q_ptr := s.q + h * p.head_dim;
+    att_ptr := s.att + h * p.seq_len;
+    for t := 0 to pos do
+    begin
+      k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
+      (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) / Sqrt(p.head_dim);
+    end;
+    Softmax(att_ptr, pos + 1);
+    xb_ptr := s.xb + h * p.head_dim;
+    FillChar(xb_ptr^, p.head_dim * SizeOf(single), 0);
+    for t := 0 to pos do
+    begin
+      v_ptr := s.value_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
+
+      // Apply Scalar
+      for i := 0 to p.head_dim - 1 do
+          (xb_ptr + i)^ := (xb_ptr + i)^ + (att_ptr + t)^ * (v_ptr + i)^;
+    end;
+  end;
+  // Final attention matmul
+  s.xq.Quantize(s.xb, all_heads_dim);
+  s.xq.MatMul(s.xb, w.wo.GetTensor(l), all_heads_dim, p.dim);
+end;
+
+procedure TTransformer.ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l: longint);
+begin
+  self.RMSNorm(s.xb, s.x, w.rms_ffn_weight + l * p.dim, p.dim);
+  s.xq.Quantize(s.xb, p.dim);
+  s.xq.MatMul(s.hb, w.w1.GetTensor(l), p.dim, p.hidden_dim);
+  s.xq.MatMul(s.hb2, w.w3.GetTensor(l), p.dim, p.hidden_dim);
+  self.SwiGLU(s.hb, s.hb2, p.hidden_dim);
+  s.hq.Quantize(s.hb, p.hidden_dim);
+  s.hq.MatMul(s.xb, w.w2.GetTensor(l), p.hidden_dim, p.dim);
+end;
+
+procedure TTransformer.ApplyResidualConnection(const x, xb: PSingle; const dim: longint);
+var
+  i: longint;
+begin
+  for i := 0 to dim - 1 do
+    (x + i)^ := (x + i)^ + (xb + i)^;
+end;
+
+procedure TTransformer.ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig);
+begin
+  self.RMSNorm(s.x, s.x, w.rms_final_weight, p.dim);
+  s.xq.Quantize(s.x, p.dim);
+  s.xq.MatMul(s.logits, w.wcls^, p.dim, p.vocab_size);
+end;
+
+procedure TTransformer.MallocRunState(var s: TRunState; var p: TConfig);
+var
+  all_heads_dim, kv_dim: longint;
+begin
+  all_heads_dim := p.n_heads * p.head_dim;
+  kv_dim := p.n_kv_heads * p.head_dim;
+  s.x := AllocMem(p.dim * SizeOf(single));
+  s.xb := AllocMem(all_heads_dim * SizeOf(single));
+  s.hb := AllocMem(p.hidden_dim * SizeOf(single));
+  s.hb2 := AllocMem(p.hidden_dim * SizeOf(single));
+  s.xq.q := AllocMem(all_heads_dim * SizeOf(shortint));
+  s.xq.s := AllocMem((all_heads_dim div p.group_size) * SizeOf(single));
+  s.xq.group_size := p.group_size;
+  s.hq.q := AllocMem(p.hidden_dim * SizeOf(shortint));
+  s.hq.s := AllocMem((p.hidden_dim div p.group_size) * SizeOf(single));
+  s.hq.group_size := p.group_size;
+  s.q := AllocMem(all_heads_dim * SizeOf(single));
+  s.att := AllocMem(p.n_heads * p.seq_len * SizeOf(single));
+  s.logits := AllocMem(p.vocab_size * SizeOf(single));
+  s.key_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
+  s.value_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
+end;
+
+procedure TTransformer.FreeRunState(var s: TRunState);
+begin
+  FreeMem(s.x);
+  FreeMem(s.xb);
+  FreeMem(s.hb);
+  FreeMem(s.hb2);
+  FreeMem(s.xq.q);
+  FreeMem(s.xq.s);
+  FreeMem(s.hq.q);
+  FreeMem(s.hq.s);
+  FreeMem(s.q);
+  FreeMem(s.att);
+  FreeMem(s.logits);
+  FreeMem(s.key_cache);
+  FreeMem(s.value_cache);
+end;
+// --- End TTransformer helper method implementations ---
+
 end.
+
