@@ -1,4 +1,4 @@
-## Qwen3 Inference for FreePascal
+## Qwen3 Inference for FreePascal by Alfredo Fernandes
 
 This do inference using CPU only, I've implemented some speedup improves with AVX2 but I bet there's still lot of room for improvements.
 
