@@ -22,7 +22,7 @@ Be aware that it does not take advantage of batching or parallel processing, so 
 
 ### Clone repo and install python requirements
 ```
-https://github.com/fredconex/qwen3.pas.git
+git clone https://github.com/fredconex/qwen3.pas.git
 cd qwen3.pas
 pip install -r requirements.txt
 ```
