@@ -27,7 +27,7 @@ cd qwen3.pas
 pip install -r requirements.txt
 ```
 
-### Convert the HF model to bin using python
+### Convert the HF model to Q8 bin using python
 ```
 python export.py Qwen3-0.6B.bin Qwen/Qwen3-0.6B
 ```
