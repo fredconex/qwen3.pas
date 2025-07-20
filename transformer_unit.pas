@@ -3,6 +3,7 @@ unit Transformer_Unit;
 
 {$mode objfpc}{$H+}
 {$modeswitch advancedrecords}
+{$modeswitch nestedprocvars}
 
 interface
 
@@ -12,6 +13,7 @@ uses
   Math,
   DateUtils,
   Windows,
+  mtprocs,
   Tokenizer_Unit,
   Tensor_Unit;
 
@@ -113,9 +115,25 @@ var
     Inc(FloatPtr, ElementCount);
   end;
 
-  procedure AllocateAndDequantizeTokens;
+  procedure AllocateAndDequantizeTokens(NUM_PARTS : integer = 1);
   var
     TokenTableSize: integer;
+    BatchSize: integer;
+    NumBatches: integer;
+
+    // Parallel dequantization in batches
+    {$HINTS OFF}
+    procedure DequantProc(BatchIdx: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+    var
+      local_start, local_end, j: integer;
+    begin
+      local_start := BatchIdx * BatchSize;
+      local_end := local_start + BatchSize - 1;
+      if local_end >= TokenTableSize then
+        local_end := TokenTableSize - 1;
+      for j := local_start to local_end do
+        (weights.token_embedding_table + j)^ := (weights.q_tokens^.q + j)^ * (weights.q_tokens^.s + (j div weights.q_tokens^.group_size))^;
+    end;
   begin
     TokenTableSize := config.vocab_size * config.dim;
 
@@ -127,9 +145,13 @@ var
     Inc(BytePtr, (TokenTableSize div config.group_size) * SizeOf(single));
     weights.q_tokens^.group_size := config.group_size;
 
-    // Allocate and dequantize token embedding table
+    // Allocate token embedding table
     GetMem(weights.token_embedding_table, TokenTableSize * SizeOf(single));
-    weights.q_tokens^.Dequantize(weights.token_embedding_table, TokenTableSize);
+
+    // Batching
+    NumBatches := Min(NUM_PARTS, TokenTableSize);  // don't create more batches than elements
+    BatchSize := (TokenTableSize + NumBatches - 1) div NumBatches;
+    ProcThreadPool.DoParallelNested(@DequantProc, 0, NumBatches - 1, nil);
   end;
 
 begin
@@ -146,7 +168,7 @@ begin
   BytePtr := pbyte(FloatPtr);
 
   // Process token embeddings
-  AllocateAndDequantizeTokens;
+  AllocateAndDequantizeTokens(128);
 
   // Map quantized weight matrices
   with config do

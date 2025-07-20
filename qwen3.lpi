@@ -30,6 +30,9 @@
     </RunParams>
     <RequiredPackages>
       <Item>
+        <PackageName Value="multithreadprocslaz"/>
+      </Item>
+      <Item>
         <PackageName Value="LCL"/>
       </Item>
     </RequiredPackages>
