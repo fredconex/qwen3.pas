@@ -519,11 +519,24 @@ var
   i, j: longint;
   val: single;
   ival: longint;
-  x_base, w_base: PShortInt;
+  x_base, w_base: PInt8;
   x_scales, w_scales: PSingle;
   group_scale: single;
   groups: integer;
+  dot_func: function(const x_base, w_base: PShortInt): longint;
 begin
+  groups := n div self.group_size;
+  case self.group_size of
+    64: dot_func := @Int8_DotProduct64_AVX2;
+    128: dot_func := @Int8_DotProduct128_AVX2;
+    256: dot_func := @Int8_DotProduct256_AVX2;
+    else
+    begin
+      WriteLn(StdErr, 'Error: Unsupported group size in MatMul: ', self.group_size);
+      Halt(1);
+    end;
+
+    end;
   groups := n div self.group_size;
   for i := 0 to d - 1 do
   begin
@@ -536,19 +549,7 @@ begin
     for j := 0 to groups - 1 do
     begin
       // Select dot product function based on group size
-      case self.group_size of
-        64:
-          ival := Int8_DotProduct64_AVX2(x_base, w_base);
-        128:
-          ival := Int8_DotProduct128_AVX2(x_base, w_base);
-        256:
-          ival := Int8_DotProduct256_AVX2(x_base, w_base);
-        else
-          begin
-            WriteLn(StdErr, 'Error: Unsupported group size in MatMul: ', self.group_size);
-            Halt(1);
-          end;
-      end;
+      ival := dot_func(x_base, w_base);
 
       group_scale := x_scales^ * w_scales^;
       val += ival * group_scale;
