@@ -521,7 +521,6 @@ var
   ival: longint;
   x_base, w_base: PInt8;
   x_scales, w_scales: PSingle;
-  group_scale: single;
   groups: integer;
   dot_func: function(const x_base, w_base: PShortInt): longint;
 begin
@@ -536,7 +535,7 @@ begin
       Halt(1);
     end;
 
-    end;
+  end;
   groups := n div self.group_size;
   for i := 0 to d - 1 do
   begin
@@ -546,18 +545,17 @@ begin
     x_base := self.q;
     x_scales := self.s;
 
-    for j := 0 to groups - 1 do
+    j := 0;
+    while j < groups do
     begin
-      // Select dot product function based on group size
       ival := dot_func(x_base, w_base);
+      val += ival * (x_scales^ * w_scales^);
 
-      group_scale := x_scales^ * w_scales^;
-      val += ival * group_scale;
-
-      Inc(x_base, self.group_size);
-      Inc(w_base, self.group_size);
+      Inc(x_base, self.group_size * 1);
+      Inc(w_base, self.group_size * 1);
       Inc(x_scales);
       Inc(w_scales);
+      Inc(j);
     end;
 
     xout^ := val;
