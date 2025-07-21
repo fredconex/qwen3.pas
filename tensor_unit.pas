@@ -40,6 +40,7 @@ type
 function Int8_DotProduct64_AVX2(const x_base, w_base: PShortInt): longint; assembler;
 function DotProduct(a, b: PSingle; dim: integer): single;
 function DotProduct_Hybrid(a, b: PSingle; dim: integer): single;
+function Int8_DotProduct256_AVX2(const x_base, w_base: PShortInt): longint;
 
 implementation
 
@@ -308,11 +309,90 @@ asm
          VZEROUPPER
 end;
 
+function Int8_DotProduct128_AVX2(const x_base, w_base: PShortInt): longint; assembler;
+asm
+         // Computes the dot product of two vectors of 128 signed 8-bit integers using AVX2.
+         VPXOR   YMM4, YMM4, YMM4       // Zero out the accumulator register ymm4
+
+         MOV     RAX, x_base
+         MOV     RDX, w_base
+
+         // Process 8 blocks of 16 bytes (128 elements)
+         // Block 1 (0-15)
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 2 (16-31)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 3 (32-47)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 4 (48-63)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 5 (64-79)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 6 (80-95)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 7 (96-111)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 8 (112-127)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+
+         // Horizontal sum as before
+         VEXTRACTI128 XMM0, YMM4, 1
+         VPADDD  XMM4, XMM4, XMM0
+         VPHADDD XMM4, XMM4, XMM4
+         VPHADDD XMM4, XMM4, XMM4
+         VMOVD   EAX, XMM4
+         VZEROUPPER
+end;
+
+function Int8_DotProduct256_AVX2(const x_base, w_base: PShortInt): longint;
+begin
+  Result := Int8_DotProduct128_AVX2(x_base, w_base );
+  Result += Int8_DotProduct128_AVX2(x_base + 128, w_base + 128);
+end;
+
 
 // Updated MatMul procedure
 procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
 var
-  i, j: longint; // k is no longer needed
+  i, j: longint;
   val: single;
   ival: longint;
   x_base, w_base: PShortInt;
@@ -331,14 +411,24 @@ begin
 
     for j := 0 to groups - 1 do
     begin
-      // The inner loop over k is replaced by a single call to the 64-element dot product function.
-      //ival := Int8_DotProduct(x_base, w_base);
-      ival := Int8_DotProduct64_AVX2(x_base, w_base);
+      // Select dot product function based on group size
+      case self.group_size of
+        64:
+          ival := Int8_DotProduct64_AVX2(x_base, w_base);
+        128:
+          ival := Int8_DotProduct128_AVX2(x_base, w_base);
+        256:
+          ival := Int8_DotProduct256_AVX2(x_base, w_base);
+        else
+          begin
+            WriteLn(StdErr, 'Error: Unsupported group size in MatMul: ', self.group_size);
+            Halt(1);
+          end;
+      end;
 
       group_scale := x_scales^ * w_scales^;
       val += ival * group_scale;
 
-      // Advance pointers to the next group of 64 elements for the next iteration.
       Inc(x_base, self.group_size);
       Inc(w_base, self.group_size);
       Inc(x_scales);
