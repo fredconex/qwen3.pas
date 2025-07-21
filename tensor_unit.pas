@@ -382,10 +382,134 @@ asm
          VZEROUPPER
 end;
 
-function Int8_DotProduct256_AVX2(const x_base, w_base: PShortInt): longint;
-begin
-  Result := Int8_DotProduct128_AVX2(x_base, w_base );
-  Result += Int8_DotProduct128_AVX2(x_base + 128, w_base + 128);
+function Int8_DotProduct256_AVX2(const x_base, w_base: PShortInt): longint; assembler;
+asm
+         // Computes the dot product of two vectors of 128 signed 8-bit integers using AVX2.
+         VPXOR   YMM4, YMM4, YMM4       // Zero out the accumulator register ymm4
+
+         MOV     RAX, x_base
+         MOV     RDX, w_base
+
+         // Process 8 blocks of 16 bytes (128 elements)
+         // Block 1 (0-15)
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 2 (16-31)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 3 (32-47)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 4 (48-63)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 5 (64-79)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 6 (80-95)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 7 (96-111)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 8 (112-127)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+
+         // Block 1 (0-15)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 2 (16-31)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 3 (32-47)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 4 (48-63)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 5 (64-79)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 6 (80-95)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 7 (96-111)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+         // Block 8 (112-127)
+         ADD     RAX, 16
+         ADD     RDX, 16
+         VPMOVSXBW YMM0, [RAX]
+         VPMOVSXBW YMM1, [RDX]
+         VPMADDWD YMM2, YMM0, YMM1
+         VPADDD  YMM4, YMM4, YMM2
+
+         // Horizontal sum as before
+         VEXTRACTI128 XMM0, YMM4, 1
+         VPADDD  XMM4, XMM4, XMM0
+         VPHADDD XMM4, XMM4, XMM4
+         VPHADDD XMM4, XMM4, XMM4
+         VMOVD   EAX, XMM4
+         VZEROUPPER
 end;
 
 
