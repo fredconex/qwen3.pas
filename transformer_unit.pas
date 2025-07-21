@@ -4,6 +4,7 @@ unit Transformer_Unit;
 {$mode objfpc}{$H+}
 {$modeswitch advancedrecords}
 {$modeswitch nestedprocvars}
+{$modeswitch anonymousfunctions}
 
 interface
 
@@ -15,7 +16,8 @@ uses
   mtprocs,
   Windows,
   Tokenizer_Unit,
-  Tensor_Unit;
+  Tensor_Unit,
+  SyncObjs;
 
 type
   { Configuration structure }
@@ -74,6 +76,7 @@ type
   { Transformer structure }
   TTransformer = class
   private
+    KVCacheCS: TCriticalSection;
     procedure MapWeightsToMemory(var DataPtr: Pointer);
     procedure MallocRunState(var s: TRunState; var p: TConfig);
     procedure FreeRunState(var s: TRunState);
@@ -98,7 +101,7 @@ type
     constructor Create(checkpoint_path: string; ctx_length: longint);
     destructor Destroy; override;
     function Forward(token: longint; pos: longint): PSingle;
-    procedure ForwardBatch(tokens, positions: PLongInt; batch_count: Integer);
+    procedure ForwardBatchPrompt(tokens, positions: PLongInt; batch_count: Integer); // NEW
     procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: PChar);
     procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: PChar; system_prompt: PChar);
   end;
@@ -241,12 +244,14 @@ end;
 { TTransformer method implementations }
 constructor TTransformer.Create(checkpoint_path: string; ctx_length: longint);
 begin
+  KVCacheCS := TCriticalSection.Create;
   LoadFromFile(checkpoint_path, ctx_length);
   MallocRunState(self.state, self.config);
 end;
 
 destructor TTransformer.Destroy;
 begin
+  KVCacheCS.Free;
   FreeMem(self.weights.q_tokens);
   FreeMem(self.weights.token_embedding_table);
   // Arrays are automatically freed by Pascal
@@ -314,25 +319,21 @@ begin
   response_started := False;
 
   batch_size := self.state.batch_size;
-  // Process prompt tokens in batches
-  while (pos < num_prompt_tokens) do
+  // Process prompt tokens in a single batch using two-pass method
+  if num_prompt_tokens > 0 then
   begin
-    batch_start := pos;
-    batch_end := Min(pos + batch_size, num_prompt_tokens);
-    batch_count := batch_end - batch_start;
-    SetLength(batch_tokens, batch_count);
-    SetLength(batch_positions, batch_count);
-    for i := 0 to batch_count - 1 do
+    SetLength(batch_tokens, num_prompt_tokens);
+    SetLength(batch_positions, num_prompt_tokens);
+    for i := 0 to num_prompt_tokens - 1 do
     begin
-      batch_tokens[i] := (prompt_tokens + batch_start + i)^;
-      batch_positions[i] := batch_start + i;
+      batch_tokens[i] := (prompt_tokens + i)^;
+      batch_positions[i] := i;
     end;
-    ForwardBatch(@batch_tokens[0], @batch_positions[0], batch_count);
-    // Output prompt tokens if requested
+    ForwardBatchPrompt(@batch_tokens[0], @batch_positions[0], num_prompt_tokens);
     if output_prompt then
-      for i := 0 to batch_count - 1 do
+      for i := 0 to num_prompt_tokens - 1 do
         Write(tokenizer.Decode(batch_tokens[i]));
-    pos := batch_end;
+    pos := num_prompt_tokens;
   end;
   if output_prompt then
     Flush(Output);
@@ -592,8 +593,13 @@ begin
     self.ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
   end;
   // NOW write K/V to cache for this position (after K RMSNorm+RoPE)
-  Move(s.k[batch_idx]^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
-  Move(s.v[batch_idx]^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+  KVCacheCS.Enter;
+  try
+    Move(s.k[batch_idx]^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+    Move(s.v[batch_idx]^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+  finally
+    KVCacheCS.Leave;
+  end;
   // Multihead attention - optimized
   for h := 0 to p.n_heads - 1 do
   begin
@@ -725,35 +731,30 @@ begin
   if Assigned(s.value_cache) then FreeMem(s.value_cache);
 end;
 
-{$HINTS OFF}
-procedure TTransformer.ForwardBatch(tokens, positions: PLongInt; batch_count: Integer);
+procedure TTransformer.ForwardBatchPrompt(tokens, positions: PLongInt; batch_count: Integer);
 var
   p: ^TConfig;
   w: ^TTransformerWeights;
   s: ^TRunState;
-  l: longint;
-
-  procedure BatchEmbeddingProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
-  var
-    token: LongInt;
-  begin
-    token := (tokens + Index)^;
-    Move((w^.token_embedding_table + token * p^.dim)^, s^.x[Index]^, p^.dim * SizeOf(single));
-  end;
-
-  procedure BatchLayerProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+  l,h, i: longint;
+  k_ptr : psingle;
+  loff : integer;
+  kv_dim : integer;
+  // For first pass
+  pos: LongInt;
+  // For second pass
+  procedure BatchAttentionAndFFN(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
   var
     pos: LongInt;
   begin
     pos := (positions + Index)^;
-    // Attention
+    // Attention (now cache is fully populated)
     self.ProcessAttentionLayer(s^, w^, p^, l, pos, Index);
     self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
     // FFN
     self.ProcessFFNLayer(s^, w^, p^, l, Index);
     self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
   end;
-
   procedure BatchFinalLayerProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
   begin
     self.ProcessFinalLayer(s^, w^, p^, Index);
@@ -763,13 +764,51 @@ begin
   w := @self.weights;
   s := @self.state;
 
-  // Parallel embedding copy for each batch element
-  ProcThreadPool.DoParallelNested(@BatchEmbeddingProc, 0, batch_count - 1, nil);
+  // Embedding copy for each batch element (can be parallelized)
+  ProcThreadPool.DoParallelNested(
+    procedure(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem)
+    var token: LongInt;
+    begin
+      token := (tokens + Index)^;
+      Move((w^.token_embedding_table + token * p^.dim)^, s^.x[Index]^, p^.dim * SizeOf(single));
+    end,
+    0, batch_count - 1, nil);
 
-  // For each layer, process all batch elements in parallel
+  // For each layer, do two passes:
   for l := 0 to p^.n_layers - 1 do
-    ProcThreadPool.DoParallelNested(@BatchLayerProc, 0, batch_count - 1, nil);
-
+  begin
+    // First pass: compute and store K/V for all positions (no attention yet)
+    for i := 0 to batch_count - 1 do
+    begin
+      pos := (positions + i)^;
+      // RMSNorm and QKV matmuls, K/V cache update only
+      self.RMSNorm(s^.xb[i], s^.x[i], w^.rms_att_weight + l * p^.dim, p^.dim);
+      s^.xq[i].Quantize(s^.xb[i], p^.dim);
+      s^.xq[i].MatMul(s^.q[i], w^.wq.GetTensor(l), p^.dim, p^.n_heads * p^.head_dim);
+      s^.xq[i].MatMul(s^.k[i], w^.wk.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
+      s^.xq[i].MatMul(s^.v[i], w^.wv.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
+      // Q/K RMSNorm + RoPE
+      // Q not needed for cache, but K is
+      for  h := 0 to p^.n_kv_heads - 1 do
+      begin
+        k_ptr := s^.k[i] + h * p^.head_dim;
+        self.RMSNorm(k_ptr, k_ptr, w^.k_norm_weights + l * p^.head_dim, p^.head_dim);
+        self.ApplyRotaryEmbeddings(k_ptr, p^.head_dim, pos);
+      end;
+      // Write K/V to cache for this position
+      //KVCache.Enter;
+      try
+        kv_dim := p^.n_kv_heads * p^.head_dim;
+        loff := l * QWord(p^.seq_len) * kv_dim;
+        Move(s^.k[i]^, (s^.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+        Move(s^.v[i]^, (s^.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+      finally
+        //KVCache.Leave;
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
   // Final layer for all batch elements in parallel
   ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
 end;
