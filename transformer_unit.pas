@@ -12,8 +12,8 @@ uses
   Classes,
   Math,
   DateUtils,
-  Windows,
   mtprocs,
+  Windows,
   Tokenizer_Unit,
   Tensor_Unit;
 
@@ -97,8 +97,8 @@ type
 
     constructor Create(checkpoint_path: string; ctx_length: longint);
     destructor Destroy; override;
-    function Forward(token: longint; pos: longint; prefill: boolean = false): PSingle;
-    procedure ForwardBatch(tokens, positions: PLongInt; batch_count: Integer; prefill: Boolean);
+    function Forward(token: longint; pos: longint): PSingle;
+    procedure ForwardBatch(tokens, positions: PLongInt; batch_count: Integer);
     procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: PChar);
     procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: PChar; system_prompt: PChar);
   end;
@@ -124,7 +124,6 @@ var
     NumBatches: integer;
 
     // Parallel dequantization in batches
-    {$HINTS OFF}
     procedure DequantProc(BatchIdx: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
     var
       local_start, local_end, j: integer;
@@ -155,7 +154,6 @@ var
     BatchSize := (TokenTableSize + NumBatches - 1) div NumBatches;
     ProcThreadPool.DoParallelNested(@DequantProc, 0, NumBatches - 1, nil);
   end;
-
 begin
   FloatPtr := PSingle(DataPtr);
 
@@ -169,7 +167,6 @@ begin
   // Switch to byte pointer for quantized data
   BytePtr := pbyte(FloatPtr);
 
-  // Process token embeddings
   AllocateAndDequantizeTokens(128);
 
   // Map quantized weight matrices
@@ -260,7 +257,7 @@ begin
   inherited Destroy;
 end;
 
-function TTransformer.Forward(token: longint; pos: longint; prefill: boolean = false): PSingle;
+function TTransformer.Forward(token: longint; pos: longint): PSingle;
 var
   p: ^TConfig;
   w: ^TTransformerWeights;
@@ -271,7 +268,7 @@ begin
   w := @self.weights;
   s := @self.state;
 
-  // Copy token embedding for batch 0
+  // Copy token embedding
   Move((w^.token_embedding_table + token * p^.dim)^, s^.x[0]^, p^.dim * SizeOf(single));
 
   // Forward through all layers
@@ -290,60 +287,10 @@ begin
     ApplyResidualConnection(s^.x[0], s^.xb[0], p^.dim);
   end;
 
-  // Process final layer only if needed
-  if prefill = False then
-    ProcessFinalLayer(s^, w^, p^, 0);
+  // Process final layer
+  ProcessFinalLayer(s^, w^, p^, 0);
 
   Result := s^.logits[0];
-end;
-
-procedure TTransformer.ForwardBatch(tokens, positions: PLongInt; batch_count: Integer; prefill: Boolean);
-var
-  p: ^TConfig;
-  w: ^TTransformerWeights;
-  s: ^TRunState;
-  l: longint;
-
-  procedure BatchEmbeddingProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
-  var
-    token: LongInt;
-  begin
-    token := (tokens + Index)^;
-    Move((w^.token_embedding_table + token * p^.dim)^, s^.x[Index]^, p^.dim * SizeOf(single));
-  end;
-
-  procedure BatchLayerProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
-  var
-    pos: LongInt;
-  begin
-    pos := (positions + Index)^;
-    // Attention
-    self.ProcessAttentionLayer(s^, w^, p^, l, pos, Index);
-    self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
-    // FFN
-    self.ProcessFFNLayer(s^, w^, p^, l, Index);
-    self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
-  end;
-
-  procedure BatchFinalLayerProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
-  begin
-    self.ProcessFinalLayer(s^, w^, p^, Index);
-  end;
-begin
-  p := @self.config;
-  w := @self.weights;
-  s := @self.state;
-
-  // Parallel embedding copy for each batch element
-  ProcThreadPool.DoParallelNested(@BatchEmbeddingProc, 0, batch_count - 1, nil);
-
-  // For each layer, process all batch elements in parallel
-  for l := 0 to p^.n_layers - 1 do
-    ProcThreadPool.DoParallelNested(@BatchLayerProc, 0, batch_count - 1, nil);
-
-  // Only run final layer if not prefill (i.e., for generation, not prompt)
-  if not prefill then
-    ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
 end;
 
 function TTransformer.GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
@@ -380,7 +327,7 @@ begin
       batch_tokens[i] := (prompt_tokens + batch_start + i)^;
       batch_positions[i] := batch_start + i;
     end;
-    ForwardBatch(@batch_tokens[0], @batch_positions[0], batch_count, True); // prefill=True
+    ForwardBatch(@batch_tokens[0], @batch_positions[0], batch_count);
     // Output prompt tokens if requested
     if output_prompt then
       for i := 0 to batch_count - 1 do
@@ -623,8 +570,6 @@ begin
   kv_mul := p.n_heads div p.n_kv_heads;
   all_heads_dim := p.n_heads * p.head_dim;
   loff := l * QWord(p.seq_len) * kv_dim;
-  s.k[batch_idx] := s.key_cache + loff + pos * kv_dim;
-  s.v[batch_idx] := s.value_cache + loff + pos * kv_dim;
   // Attention RMS norm
   self.RMSNorm(s.xb[batch_idx], s.x[batch_idx], w.rms_att_weight + l * p.dim, p.dim);
   // QKV matmuls
@@ -646,6 +591,9 @@ begin
     self.RMSNorm(k_ptr, k_ptr, w.k_norm_weights + l * p.head_dim, p.head_dim);
     self.ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
   end;
+  // NOW write K/V to cache for this position (after K RMSNorm+RoPE)
+  Move(s.k[batch_idx]^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+  Move(s.v[batch_idx]^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
   // Multihead attention - optimized
   for h := 0 to p.n_heads - 1 do
   begin
@@ -704,7 +652,7 @@ var
   all_heads_dim, kv_dim, i: longint;
 begin
   // Batch size for prompt evaluation
-  s.batch_size := 256;
+  s.batch_size := 512;
 
   all_heads_dim := p.n_heads * p.head_dim;
   kv_dim := p.n_kv_heads * p.head_dim;
@@ -776,7 +724,55 @@ begin
   if Assigned(s.key_cache) then FreeMem(s.key_cache);
   if Assigned(s.value_cache) then FreeMem(s.value_cache);
 end;
-// --- End TTransformer helper method implementations ---
+
+{$HINTS OFF}
+procedure TTransformer.ForwardBatch(tokens, positions: PLongInt; batch_count: Integer);
+var
+  p: ^TConfig;
+  w: ^TTransformerWeights;
+  s: ^TRunState;
+  l: longint;
+
+  procedure BatchEmbeddingProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+  var
+    token: LongInt;
+  begin
+    token := (tokens + Index)^;
+    Move((w^.token_embedding_table + token * p^.dim)^, s^.x[Index]^, p^.dim * SizeOf(single));
+  end;
+
+  procedure BatchLayerProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+  var
+    pos: LongInt;
+  begin
+    pos := (positions + Index)^;
+    // Attention
+    self.ProcessAttentionLayer(s^, w^, p^, l, pos, Index);
+    self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
+    // FFN
+    self.ProcessFFNLayer(s^, w^, p^, l, Index);
+    self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
+  end;
+
+  procedure BatchFinalLayerProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
+  begin
+    self.ProcessFinalLayer(s^, w^, p^, Index);
+  end;
+begin
+  p := @self.config;
+  w := @self.weights;
+  s := @self.state;
+
+  // Parallel embedding copy for each batch element
+  ProcThreadPool.DoParallelNested(@BatchEmbeddingProc, 0, batch_count - 1, nil);
+
+  // For each layer, process all batch elements in parallel
+  for l := 0 to p^.n_layers - 1 do
+    ProcThreadPool.DoParallelNested(@BatchLayerProc, 0, batch_count - 1, nil);
+
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
 
 end.
 
