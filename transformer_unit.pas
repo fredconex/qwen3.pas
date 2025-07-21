@@ -73,6 +73,10 @@ type
     value_cache: PSingle; // Cached values for all layers (n_layers x seq_len x n_kv_heads x head_dim)
   end;
 
+  PConfig = ^TConfig;
+  PTransformerWeights = ^TTransformerWeights;
+  PRunState = ^TRunState;
+
   { Transformer structure }
   TTransformer = class
   private
@@ -91,6 +95,11 @@ type
     procedure RMSNorm(const o, x, weight: PSingle; Size: longint);
     function Sigmoid(const x: single): single;
     procedure SwiGLU(var hb, hb2: PSingle; hidden_dim: longint);
+    // --- Begin deduplication helpers ---
+    procedure DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+    procedure DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+    procedure DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+    // --- End deduplication helpers ---
   public
     config: TConfig;
     weights: TTransformerWeights;
@@ -126,7 +135,8 @@ var
     BatchSize: integer;
     NumBatches: integer;
 
-// Parallel dequantization in batches
+    // Parallel dequantization in batches
+    {$HINTS OFF}
     procedure DequantProc(BatchIdx: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
     var
       local_start, local_end, j: integer;
@@ -276,26 +286,14 @@ begin
   s := @self.state;
 
   // Copy token embedding
-  Move((w^.token_embedding_table + token * p^.dim)^, s^.x[0]^, p^.dim * SizeOf(single));
+  self.DoEmbeddingCopy(s, w, p, token, 0);
 
   // Forward through all layers
   for l := 0 to p^.n_layers - 1 do
-  begin
-    // Process attention layer
-    ProcessAttentionLayer(s^, w^, p^, l, pos, 0);
-
-    // Apply residual connection after attention
-    ApplyResidualConnection(s^.x[0], s^.xb[0], p^.dim);
-
-    // Process feed-forward network layer
-    ProcessFFNLayer(s^, w^, p^, l, 0);
-
-    // Apply residual connection after FFN
-    ApplyResidualConnection(s^.x[0], s^.xb[0], p^.dim);
-  end;
+    self.DoLayerPass(s, w, p, l, pos, 0);
 
   // Process final layer
-  ProcessFinalLayer(s^, w^, p^, 0);
+  self.DoFinalLayer(s, w, p, 0);
 
   Result := s^.logits[0];
 end;
@@ -309,7 +307,7 @@ var
   time_to_first_token, total_time: double;
   tokens_per_second: double;
   response_started: boolean;
-  batch_size, batch_start, batch_end, batch_count, i: longint;
+  batch_count, i: longint;
   batch_tokens: array of longint = ();
   batch_positions: array of longint = ();
 begin
@@ -320,7 +318,6 @@ begin
   first_token_time := 0;
   response_started := False;
 
-  batch_size := self.state.batch_size;
   // Process prompt tokens in a single batch using two-pass method
   if num_prompt_tokens > 0 then
   begin
@@ -751,13 +748,14 @@ var
   kv_dim: integer;
   // For first pass
   pos: longint;
-// For second pass
+  // For second pass
+{$HINTS OFF}
   procedure BatchEmbeddingCopy(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
   var
     token: longint;
   begin
     token := (tokens + Index)^;
-    Move((w^.token_embedding_table + token * p^.dim)^, s^.x[Index]^, p^.dim * SizeOf(single));
+    self.DoEmbeddingCopy(s, w, p, token, Index);
   end;
 
   procedure BatchAttentionAndFFN(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
@@ -765,17 +763,12 @@ var
     pos: longint;
   begin
     pos := (positions + Index)^;
-    // Attention (now cache is fully populated)
-    self.ProcessAttentionLayer(s^, w^, p^, l, pos, Index);
-    self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
-    // FFN
-    self.ProcessFFNLayer(s^, w^, p^, l, Index);
-    self.ApplyResidualConnection(s^.x[Index], s^.xb[Index], p^.dim);
+    self.DoLayerPass(s, w, p, l, pos, Index);
   end;
 
   procedure BatchFinalLayerProc(Index: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
   begin
-    self.ProcessFinalLayer(s^, w^, p^, Index);
+    self.DoFinalLayer(s, w, p, Index);
   end;
 
 begin
@@ -818,6 +811,26 @@ begin
   end;
   // Final layer for all batch elements in parallel
   ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+begin
+  Move((w^.token_embedding_table + token * p^.dim)^, s^.x[batch_idx]^, p^.dim * SizeOf(single));
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  self.ApplyResidualConnection(s^.x[batch_idx], s^.xb[batch_idx], p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  self.ApplyResidualConnection(s^.x[batch_idx], s^.xb[batch_idx], p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
 end;
 
 end.
