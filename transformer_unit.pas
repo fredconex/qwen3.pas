@@ -96,7 +96,7 @@ type
 
     constructor Create(checkpoint_path: string; ctx_length: longint);
     destructor Destroy; override;
-    function Forward(token: longint; pos: longint): PSingle;
+    function Forward(token: longint; pos: longint; prefill: boolean = false): PSingle;
     procedure Generate(var tokenizer: TTokenizer; var sampler: TSampler; prompt: PChar);
     procedure Chat(var tokenizer: TTokenizer; var sampler: TSampler; cli_user_prompt: PChar; system_prompt: PChar);
   end;
@@ -258,7 +258,7 @@ begin
   inherited Destroy;
 end;
 
-function TTransformer.Forward(token: longint; pos: longint): PSingle;
+function TTransformer.Forward(token: longint; pos: longint; prefill: boolean = false): PSingle;
 var
   p: ^TConfig;
   w: ^TTransformerWeights;
@@ -278,7 +278,7 @@ begin
     // Process attention layer
     ProcessAttentionLayer(s^, w^, p^, l, pos);
 
-    // Apply residual connection after attention
+    // Apply residual connection after attention    
     ApplyResidualConnection(s^.x, s^.xb, p^.dim);
 
     // Process feed-forward network layer
@@ -288,8 +288,9 @@ begin
     ApplyResidualConnection(s^.x, s^.xb, p^.dim);
   end;
 
-  // Process final layer
-  ProcessFinalLayer(s^, w^, p^);
+  // Process final layer only if needed
+  if prefill = False then
+    ProcessFinalLayer(s^, w^, p^);
 
   Result := s^.logits;
 end;
@@ -320,7 +321,10 @@ begin
   while pos < self.config.seq_len do
   begin
     // Forward transformer to get logits
-    logits := self.Forward(token, pos);
+    if pos < num_prompt_tokens - 1 then
+      logits := self.Forward(token, pos, True)
+    else
+      logits := self.Forward(token, pos, False);
 
     // Advance state machine
     if pos < num_prompt_tokens - 1 then

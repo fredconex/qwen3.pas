@@ -516,13 +516,14 @@ end;
 // Updated MatMul procedure
 procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
 var
-  i, j: longint;
+  i, j, k: longint;
   val: single;
-  ival: longint;
   x_base, w_base: PInt8;
   x_scales, w_scales: PSingle;
   groups: integer;
   dot_func: function(const x_base, w_base: PShortInt): longint;
+  group_ivals: array of longint = ();
+  x_scales_start, w_scales_start: PSingle;
 begin
   groups := n div self.group_size;
   case self.group_size of
@@ -544,19 +545,22 @@ begin
     w_scales := w.s + (i * groups);
     x_base := self.q;
     x_scales := self.s;
+    SetLength(group_ivals, groups);
+    x_scales_start := x_scales;
+    w_scales_start := w_scales;
 
-    j := 0;
-    while j < groups do
+    for j := 0 to groups-1 do
     begin
-      ival := dot_func(x_base, w_base);
-      val += ival * (x_scales^ * w_scales^);
-
-      Inc(x_base, self.group_size * 1);
-      Inc(w_base, self.group_size * 1);
+      group_ivals[j] := dot_func(x_base, w_base);
+      Inc(x_base, self.group_size);
+      Inc(w_base, self.group_size);
       Inc(x_scales);
       Inc(w_scales);
-      Inc(j);
     end;
+
+    // Calculate sum using group_ivals and scaling factors
+    for k := 0 to groups -1 do
+      val += group_ivals[k] * (x_scales_start[k] * w_scales_start[k]);
 
     xout^ := val;
     Inc(xout);
