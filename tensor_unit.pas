@@ -249,64 +249,100 @@ end;
 {$ASMMODE INTEL}
 function Int8_DotProduct64_AVX2(const x_base, w_base: PShortInt): longint; assembler;
 asm
-         // This function computes the dot product of two vectors of 64 signed 8-bit integers.
-         // It requires AVX2 support.
-         // We use ymm4 as our 256-bit accumulator, which holds 8 x 32-bit integer sums.
-         VPXOR   YMM4, YMM4, YMM4       // Zero out the accumulator register ymm4
+         // Use two accumulators to improve instruction-level parallelism
+         VPXOR   YMM4, YMM4, YMM4       // First accumulator
+         VPXOR   YMM5, YMM5, YMM5       // Second accumulator
 
-         // Load base pointers into registers
          MOV     RAX, x_base
          MOV     RDX, w_base
 
-         // --- Process first 16 bytes (elements 0-15) ---
-         VPMOVSXBW YMM0, [RAX]      // Load 16 bytes from x and sign-extend to 16-bit words in ymm0
-         VPMOVSXBW YMM1, [RDX]      // Load 16 bytes from w and sign-extend to 16-bit words in ymm1
-         VPMADDWD YMM2, YMM0, YMM1  // Multiply 16-bit words, then add adjacent 32-bit products.
-         VPADDD  YMM4, YMM4, YMM2    // Add the partial products to our main accumulator.
-
-         // --- Process second 16 bytes (elements 16-31) ---
-         ADD     RAX, 16
-         ADD     RDX, 16
+         // Process in pairs for better pipeline utilization
+         // Block 1 & 2 (0-31)
          VPMOVSXBW YMM0, [RAX]
          VPMOVSXBW YMM1, [RDX]
-         VPMADDWD YMM2, YMM0, YMM1
-         VPADDD  YMM4, YMM4, YMM2
+         VPMOVSXBW YMM2, [RAX + 16]
+         VPMOVSXBW YMM3, [RDX + 16]
 
-         // --- Process third 16 bytes (elements 32-47) ---
-         ADD     RAX, 16
-         ADD     RDX, 16
+         VPMADDWD YMM0, YMM0, YMM1
+         VPMADDWD YMM2, YMM2, YMM3
+         VPADDD  YMM4, YMM4, YMM0
+         VPADDD  YMM5, YMM5, YMM2
+
+         // Block 3 & 4 (32-63)
+         ADD     RAX, 32
+         ADD     RDX, 32
          VPMOVSXBW YMM0, [RAX]
          VPMOVSXBW YMM1, [RDX]
-         VPMADDWD YMM2, YMM0, YMM1
-         VPADDD  YMM4, YMM4, YMM2
+         VPMOVSXBW YMM2, [RAX + 16]
+         VPMOVSXBW YMM3, [RDX + 16]
 
-         // --- Process fourth 16 bytes (elements 48-63) ---
-         ADD     RAX, 16
-         ADD     RDX, 16
-         VPMOVSXBW YMM0, [RAX]
-         VPMOVSXBW YMM1, [RDX]
-         VPMADDWD YMM2, YMM0, YMM1
-         VPADDD  YMM4, YMM4, YMM2
+         VPMADDWD YMM0, YMM0, YMM1
+         VPMADDWD YMM2, YMM2, YMM3
+         VPADDD  YMM4, YMM4, YMM0
+         VPADDD  YMM5, YMM5, YMM2
 
-         // At this point, ymm4 contains 8 partial sums (each a sum of 8 products).
-         // Now we need to sum these 8 dword values together to get the final result.
+         // Combine accumulators
+         VPADDD  YMM4, YMM4, YMM5
 
-         // --- Horizontal Summation of the accumulator (ymm4) ---
-         // Add the upper 128 bits of ymm4 to the lower 128 bits.
-         VEXTRACTI128 XMM0, YMM4, 1    // xmm0 = upper 128 bits of ymm4
-         VPADDD  XMM4, XMM4, XMM0       // xmm4 = lower 128 bits + upper 128 bits.
-         // Result is in the lower 128 bits (xmm4). We now have 4 sums.
-
-         // Horizontal add the remaining 4 dwords in xmm4
-         VPHADDD XMM4, XMM4, XMM4      // [d0,d1,d2,d3] -> [d0+d1, d2+d3, d0+d1, d2+d3]
-         VPHADDD XMM4, XMM4, XMM4      // [s0,s1,s0,s1] -> [s0+s1, s0+s1, s0+s1, s0+s1]
-
-         // The final sum is now in the lowest 32 bits of xmm4.
-         VMOVD   EAX, XMM4               // Move the 32-bit result into eax
-
-         // It's good practice to clear the upper state of YMM registers after use
-         // to avoid performance penalties when mixing AVX and legacy SSE code.
+         // Optimized horizontal sum
+         VEXTRACTI128 XMM0, YMM4, 1
+         VPADDD  XMM4, XMM4, XMM0
+         VPHADDD XMM4, XMM4, XMM4
+         VPHADDD XMM4, XMM4, XMM4
+         VMOVD   EAX, XMM4
          VZEROUPPER
+end;
+
+{$ASMMODE INTEL}
+function Int8_DotProduct64_AVX2_Aligned(const x_base, w_base: PShortInt): longint; assembler;
+asm
+        // Zero accumulators using efficient VPXOR
+        VPXOR   YMM4, YMM4, YMM4            // YMM4 = accumulator low  (blocks 0-31)
+        VPXOR   YMM5, YMM5, YMM5            // YMM5 = accumulator high (blocks 32-63)
+
+        MOV     RAX, x_base
+        MOV     RDX, w_base
+
+        // ┌─────────────────────────────────────────────────────┐
+        // │ Process first 32 int8s (offset 0–31)                │
+        // └─────────────────────────────────────────────────────┘
+        VPMOVSXBW YMM0, [RAX +  0]           // Load 32 int8 → 32 int16 (sign-extended)
+        VPMOVSXBW YMM1, [RDX +  0]
+        VPMOVSXBW YMM2, [RAX + 16]           // Second half of first 32 elements
+        VPMOVSXBW YMM3, [RDX + 16]
+
+        VPMADDWD YMM0, YMM0, YMM1            // Multiply-add: 16 signed word pairs → 8 dwords
+        VPMADDWD YMM2, YMM2, YMM3
+        VPADDD   YMM4, YMM4, YMM0            // Accumulate into YMM4
+        VPADDD   YMM5, YMM5, YMM2            // Keep separate for ILP
+
+        // ┌─────────────────────────────────────────────────────┐
+        // │ Process next 32 int8s (offset 32–63)                │
+        // └─────────────────────────────────────────────────────┘
+        VPMOVSXBW YMM0, [RAX + 32]           // Second block: 32–63
+        VPMOVSXBW YMM1, [RDX + 32]
+        VPMOVSXBW YMM2, [RAX + 48]
+        VPMOVSXBW YMM3, [RDX + 48]
+
+        VPMADDWD YMM0, YMM0, YMM1
+        VPMADDWD YMM2, YMM2, YMM3
+        VPADDD   YMM4, YMM4, YMM0            // Add to lower accumulator
+        VPADDD   YMM5, YMM5, YMM2            // Finish upper
+
+        // ┌─────────────────────────────────────────────────────┐
+        // │ Combine final results                               │
+        // └─────────────────────────────────────────────────────┘
+        VPADDD  YMM4, YMM4, YMM5              // Merge both accumulators → YMM4[8 dwords]
+
+        // Horizontal sum: reduce 8 dwords to scalar
+        VEXTRACTI128 XMM0, YMM4, 1             // Get upper 128 bits
+        VPADDD  XMM4, XMM4, XMM0               // Sum all 8 → 4 dwords in XMM4
+        VPHADDD XMM4, XMM4, XMM4               // → [a+b, c+d, e+f, g+h] → [a+b+c+d, e+f+g+h, ...]
+        VPHADDD XMM4, XMM4, XMM4               // → [total, ?, ?, ?]
+
+        VMOVD   EAX, XMM4                      // Extract lowest dword = total sum
+
+        VZEROUPPER                             // Avoid AVX/SSE transition penalty
 end;
 
 function Int8_DotProduct128_AVX2(const x_base, w_base: PShortInt): longint; assembler;
@@ -513,55 +549,67 @@ asm
 end;
 
 
-// Updated MatMul procedure
 procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
 var
-  i, j, k: longint;
+  i, j: longint;
   val: single;
   x_base, w_base: PInt8;
   x_scales, w_scales: PSingle;
   groups: integer;
   dot_func: function(const x_base, w_base: PShortInt): longint;
-  group_ivals: array of longint = ();
-  x_scales_start, w_scales_start: PSingle;
+  x_qdata: PInt8;
+  x_sdata: PSingle;
+  w_qdata: PInt8;
+  w_sdata: PSingle;
 begin
+  // Cache object fields locally
+  x_qdata := self.q;
+  x_sdata := self.s;
+  w_qdata := w.q;
+  w_sdata := w.s;
+
   groups := n div self.group_size;
+
+  // Dispatch dot function
   case self.group_size of
-    64: dot_func := @Int8_DotProduct64_AVX2;
+    64:  dot_func := @Int8_DotProduct64_AVX2_Aligned;
     128: dot_func := @Int8_DotProduct128_AVX2;
     256: dot_func := @Int8_DotProduct256_AVX2;
-    else
-    begin
-      WriteLn(StdErr, 'Error: Unsupported group size in MatMul: ', self.group_size);
-      Halt(1);
-    end;
-
+  else
+    WriteLn(StdErr, 'Error: Unsupported group size in MatMul: ', self.group_size);
+    Halt(1);
   end;
-  groups := n div self.group_size;
+
+  // Ensure inputs are compatible
+  assert((n mod self.group_size) = 0);
+
+  // Main matrix multiplication: d outputs
   for i := 0 to d - 1 do
   begin
-    val := 0;
-    w_base := w.q + (i * n);
-    w_scales := w.s + (i * groups);
-    x_base := self.q;
-    x_scales := self.s;
-    SetLength(group_ivals, groups);
-    x_scales_start := x_scales;
-    w_scales_start := w_scales;
+    val := 0.0;
 
-    for j := 0 to groups-1 do
+    // Set up weight pointers
+    w_base := @w_qdata[i * n];
+    w_scales := @w_sdata[i * groups];
+
+    // Set up input quantized data and scales
+    x_base := x_qdata;
+    x_scales := x_sdata;
+
+    // Fused loop: compute each group's dot product and apply scale immediately
+    for j := 0 to groups - 1 do
     begin
-      group_ivals[j] := dot_func(x_base, w_base);
+      // Compute dot product
+      val += dot_func(x_base, w_base) * (x_scales^ * w_scales^);
+
+      // Advance pointers
       Inc(x_base, self.group_size);
       Inc(w_base, self.group_size);
       Inc(x_scales);
       Inc(w_scales);
     end;
 
-    // Calculate sum using group_ivals and scaling factors
-    for k := 0 to groups -1 do
-      val += group_ivals[k] * (x_scales_start[k] * w_scales_start[k]);
-
+    // Store result
     xout^ := val;
     Inc(xout);
   end;
