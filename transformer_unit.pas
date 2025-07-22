@@ -546,20 +546,40 @@ procedure TTransformer.ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim,
 var
   j: longint;
   pfreq, cos_freq, sin_freq, x_val, y_val: single;
-  head_dim_half: single;
-  head_dim_half_int: longint;
+  half_dim: longint;
+  freq_base: single;
+  x_ptr, y_ptr: PSingle;
 begin
-  head_dim_half := head_dim / 2;
-  head_dim_half_int := head_dim div 2;
-  for j := 0 to head_dim_half_int - 1 do
+  half_dim := head_dim shr 1; // Fast division by 2
+  freq_base := 1.0 / Power(1e6, 1.0 / half_dim); // Precompute base
+
+  x_ptr := ptr;
+  y_ptr := ptr + half_dim;
+
+  for j := 0 to half_dim - 1 do
   begin
-    pfreq := pos * Power(1e6, -j / head_dim_half);
+    // Use incremental frequency computation
+    if j = 0 then
+      pfreq := pos * Power(1e6, -j / half_dim)
+    else
+      pfreq := pfreq * freq_base; // Incremental computation
+
+    // Use sincos for simultaneous computation (if available)
+    {$IFDEF HAS_SINCOS}
+    SinCos(pfreq, sin_freq, cos_freq);
+    {$ELSE}
     cos_freq := Cos(pfreq);
     sin_freq := Sin(pfreq);
-    x_val := (ptr + j)^;
-    y_val := (ptr + j + head_dim_half_int)^;
-    (ptr + j)^ := x_val * cos_freq - y_val * sin_freq;
-    (ptr + j + head_dim_half_int)^ := x_val * sin_freq + y_val * cos_freq;
+    {$ENDIF}
+
+    x_val := x_ptr^;
+    y_val := y_ptr^;
+
+    x_ptr^ := x_val * cos_freq - y_val * sin_freq;
+    y_ptr^ := x_val * sin_freq + y_val * cos_freq;
+
+    Inc(x_ptr);
+    Inc(y_ptr);
   end;
 end;
 
