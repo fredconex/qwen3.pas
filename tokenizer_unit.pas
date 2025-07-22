@@ -516,7 +516,7 @@ var
   max_val, sum: single;
   i: longint;
 begin
-  max_val := 0;
+  max_val := x^;
   for i := 0 to size - 1 do
     if (x + i)^ > max_val then
       max_val := (x + i)^;
