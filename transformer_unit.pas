@@ -16,8 +16,7 @@ uses
   mtprocs,
   Windows,
   Tokenizer_Unit,
-  Tensor_Unit,
-  SyncObjs;
+  Tensor_Unit;
 
 type
   { Configuration structure }
@@ -80,7 +79,6 @@ type
   { Transformer structure }
   TTransformer = class
   private
-    KVCacheCS: TCriticalSection;
     procedure MapWeightsToMemory(var DataPtr: Pointer);
     procedure MallocRunState(var s: TRunState; var p: TConfig);
     procedure FreeRunState(var s: TRunState);
@@ -136,7 +134,7 @@ var
     NumBatches: integer;
 
     // Parallel dequantization in batches
-    {$HINTS OFF}
+{$HINTS OFF}
     procedure DequantProc(BatchIdx: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
     var
       local_start, local_end, j: integer;
@@ -256,14 +254,12 @@ end;
 { TTransformer method implementations }
 constructor TTransformer.Create(checkpoint_path: string; ctx_length: longint);
 begin
-  KVCacheCS := TCriticalSection.Create;
   LoadFromFile(checkpoint_path, ctx_length);
   MallocRunState(self.state, self.config);
 end;
 
 destructor TTransformer.Destroy;
 begin
-  KVCacheCS.Free;
   FreeMem(self.weights.q_tokens);
   FreeMem(self.weights.token_embedding_table);
   // Arrays are automatically freed by Pascal
@@ -599,13 +595,8 @@ begin
     self.ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
   end;
   // NOW write K/V to cache for this position (after K RMSNorm+RoPE)
-  KVCacheCS.Enter;
-  try
-    Move(s.k[batch_idx]^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
-    Move(s.v[batch_idx]^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
-  finally
-    KVCacheCS.Leave;
-  end;
+  Move(s.k[batch_idx]^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+  Move(s.v[batch_idx]^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
   // Multihead attention - optimized
   for h := 0 to p.n_heads - 1 do
   begin
