@@ -298,7 +298,7 @@ function TTransformer.GenerateFromTokens(var tokenizer: TTokenizer; var sampler:
 var
   Next, token, pos: longint;
   logits: PSingle;
-  start_time, first_token_time, end_time: TDateTime;
+  start_counter, first_token_counter, end_counter, freq: int64;
   tokens_generated: longint;
   time_to_first_token, total_time: double;
   tokens_per_second: double;
@@ -310,8 +310,9 @@ begin
   // Initialize state
   pos := start_pos;
   tokens_generated := 0;
-  start_time := Now;
-  first_token_time := 0;
+  QueryPerformanceFrequency(@freq);
+  QueryPerformanceCounter(@start_counter);
+  first_token_counter := 0;
   response_started := False;
 
   // Process prompt tokens in a single batch using two-pass method
@@ -357,7 +358,7 @@ begin
     // Track first token time
     if not response_started then
     begin
-      first_token_time := Now;
+      QueryPerformanceCounter(@first_token_counter);
       response_started := True;
     end;
     // Output token and count it
@@ -370,11 +371,11 @@ begin
   // Calculate and display statistics
   if response_started then
   begin
-    end_time := Now;
-    total_time := MilliSecondsBetween(start_time, end_time) / 1000.0;
-    time_to_first_token := MilliSecondsBetween(start_time, first_token_time) / 1000.0;
+    QueryPerformanceCounter(@end_counter);
+    total_time := (end_counter - start_counter) / freq;
+    time_to_first_token := (first_token_counter - start_counter) / freq;
     if tokens_generated > 0 then
-      tokens_per_second := tokens_generated / ((MilliSecondsBetween(first_token_time, end_time)) / 1000.0)
+      tokens_per_second := tokens_generated / ((end_counter - first_token_counter) / freq)
     else
       tokens_per_second := 0;
     WriteLn;
