@@ -564,13 +564,8 @@ begin
     else
       pfreq := pfreq * freq_base; // Incremental computation
 
-    // Use sincos for simultaneous computation (if available)
-    {$IFDEF HAS_SINCOS}
-    SinCos(pfreq, sin_freq, cos_freq);
-    {$ELSE}
     cos_freq := Cos(pfreq);
     sin_freq := Sin(pfreq);
-    {$ENDIF}
 
     x_val := x_ptr^;
     y_val := y_ptr^;
@@ -589,7 +584,9 @@ var
   loff: QWord;
   i, h, t: longint;
   att_ptr, q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
+  scale: single;
 begin
+  scale := 1.0 / Sqrt(p.head_dim);
   kv_dim := p.n_kv_heads * p.head_dim;
   kv_mul := p.n_heads div p.n_kv_heads;
   all_heads_dim := p.n_heads * p.head_dim;
@@ -626,7 +623,7 @@ begin
     for t := 0 to pos do
     begin
       k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
-      (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) / Sqrt(p.head_dim);
+      (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) * scale;
     end;
     Softmax(att_ptr, pos + 1);
     xb_ptr := s.xb[batch_idx] + h * p.head_dim;
