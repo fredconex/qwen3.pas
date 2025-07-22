@@ -8,6 +8,7 @@ interface
 
 uses
   SysUtils,
+  Math,
   Classes;
 
 type
@@ -19,7 +20,7 @@ type
     s: PSingle;  // scaling factors
     group_size: longint; // Added for quantization/dequantization
 
-    procedure Dequantize(x: PSingle; n: longint);
+   // procedure Dequantize(x: PSingle; n: longint);
     procedure Quantize(x: PSingle; n: longint);
     procedure MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
   end;
@@ -45,30 +46,29 @@ function Int8_DotProduct256_AVX2(const x_base, w_base: PShortInt): longint;
 implementation
 
 { TQuantizedTensor method implementations }
-procedure TInt8QuantizedTensor.Dequantize(x: PSingle; n: longint);
+{procedure TInt8QuantizedTensor.Dequantize(x: PSingle; n: longint);
 var
   i: longint;
 begin
   for i := 0 to n - 1 do
     (x + i)^ := (self.q + i)^ * (self.s + (i div self.group_size))^;
-end;
+end; }
 
 procedure TInt8QuantizedTensor.Quantize(x: PSingle; n: longint);
 var
   group, i: longint;
-  wmax, val, scale, quant_value: single;
+  wmax, scale, quant_value: single;
   quantized: shortint;
+  current_ptr: PSingle;
 begin
   for group := 0 to (n div self.group_size) - 1 do
   begin
-    // Find max absolute value in current group
+    current_ptr := x + group * self.group_size;
+
+    // Find max absolute value
     wmax := 0;
     for i := 0 to self.group_size - 1 do
-    begin
-      val := Abs((x + group * self.group_size + i)^);
-      if val > wmax then
-        wmax := val;
-    end;
+      wmax := Max(wmax, Abs((current_ptr + i)^));
 
     // Calculate scaling factor
     scale := wmax / 127.0;
@@ -77,10 +77,7 @@ begin
     // Quantize values
     for i := 0 to self.group_size - 1 do
     begin
-      if scale > 0 then
-        quant_value := (x + group * self.group_size + i)^ / scale
-      else
-        quant_value := 0;
+      quant_value := (current_ptr + i)^ / scale;
       quantized := Round(quant_value);
       (self.q + group * self.group_size + i)^ := quantized;
     end;
