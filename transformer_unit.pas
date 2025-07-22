@@ -609,7 +609,7 @@ begin
     end;
     Softmax(att_ptr, pos + 1);
     xb_ptr := s.xb[batch_idx] + h * p.head_dim;
-    FillChar(xb_ptr^, p.head_dim * SizeOf(single), 0);
+    FillDWord(xb_ptr^, p.head_dim, 0);
     for t := 0 to pos do
     begin
       v_ptr := s.value_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
