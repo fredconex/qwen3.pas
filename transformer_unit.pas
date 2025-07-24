@@ -55,19 +55,22 @@ type
   end;
 
   { Run state }
+  TBatchState = record
+    x: PSingle;      // [dim]
+    xb: PSingle;     // [all_heads_dim]
+    hb: PSingle;     // [hidden_dim]
+    hb2: PSingle;    // [hidden_dim]
+    xq: TInt8QuantizedTensor;
+    hq: TInt8QuantizedTensor;
+    q: PSingle;      // [all_heads_dim]
+    k: PSingle;      // [kv_dim]
+    v: PSingle;      // [kv_dim]
+    att: PSingle;    // [n_heads * seq_len]
+    logits: PSingle; // [vocab_size]
+  end;
+
   TRunState = record
-    batch_size: integer;
-    x: array of PSingle;      // [batch_size][dim]
-    xb: array of PSingle;     // [batch_size][all_heads_dim]
-    hb: array of PSingle;     // [batch_size][hidden_dim]
-    hb2: array of PSingle;    // [batch_size][hidden_dim]
-    xq: array of TInt8QuantizedTensor; // [batch_size]
-    hq: array of TInt8QuantizedTensor; // [batch_size]
-    q: array of PSingle;      // [batch_size][all_heads_dim]
-    k: array of PSingle;      // [batch_size][kv_dim]
-    v: array of PSingle;      // [batch_size][kv_dim]
-    att: array of PSingle;    // [batch_size][n_heads * seq_len]
-    logits: array of PSingle; // [batch_size][vocab_size]
+    batch: array of TBatchState;
     key_cache: PSingle;   // Cached keys for all layers (n_layers x seq_len x n_kv_heads x head_dim)
     value_cache: PSingle; // Cached values for all layers (n_layers x seq_len x n_kv_heads x head_dim)
   end;
@@ -291,7 +294,7 @@ begin
   // Process final layer
   self.DoFinalLayer(s, w, p, 0);
 
-  Result := s^.logits[0];
+  Result := s^.batch[0].logits;
 end;
 
 function TTransformer.GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
@@ -321,7 +324,7 @@ begin
     pos := 0;
     while pos < num_prompt_tokens do
     begin
-      batch_count := Min(self.state.batch_size, num_prompt_tokens - pos);
+      batch_count := Min(Length(self.state.batch), num_prompt_tokens - pos);
       SetLength(batch_tokens, batch_count);
       SetLength(batch_positions, batch_count);
       for i := 0 to batch_count - 1 do
@@ -592,41 +595,41 @@ begin
   all_heads_dim := p.n_heads * p.head_dim;
   loff := l * QWord(p.seq_len) * kv_dim;
   // Attention RMS norm
-  self.RMSNorm(s.xb[batch_idx], s.x[batch_idx], w.rms_att_weight + l * p.dim, p.dim);
+  self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, w.rms_att_weight + l * p.dim, p.dim);
   // QKV matmuls
-  s.xq[batch_idx].Quantize(s.xb[batch_idx], p.dim);
-  s.xq[batch_idx].MatMul(s.q[batch_idx], w.wq.GetTensor(l), p.dim, all_heads_dim);
-  s.xq[batch_idx].MatMul(s.k[batch_idx], w.wk.GetTensor(l), p.dim, kv_dim);
-  s.xq[batch_idx].MatMul(s.v[batch_idx], w.wv.GetTensor(l), p.dim, kv_dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim);
+  s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].q, w.wq.GetTensor(l), p.dim, all_heads_dim);
+  s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].k, w.wk.GetTensor(l), p.dim, kv_dim);
+  s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].v, w.wv.GetTensor(l), p.dim, kv_dim);
   // Q-RMSNorm + rotate each query head
   for h := 0 to p.n_heads - 1 do
   begin
-    q_ptr := s.q[batch_idx] + h * p.head_dim;
+    q_ptr := s.batch[batch_idx].q + h * p.head_dim;
     self.RMSNorm(q_ptr, q_ptr, w.q_norm_weights + l * p.head_dim, p.head_dim);
     self.ApplyRotaryEmbeddings(q_ptr, p.head_dim, pos);
   end;
   // K-RMSNorm + rotate each key head
   for h := 0 to p.n_kv_heads - 1 do
   begin
-    k_ptr := s.k[batch_idx] + h * p.head_dim;
+    k_ptr := s.batch[batch_idx].k + h * p.head_dim;
     self.RMSNorm(k_ptr, k_ptr, w.k_norm_weights + l * p.head_dim, p.head_dim);
     self.ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
   end;
   // NOW write K/V to cache for this position (after K RMSNorm+RoPE)
-  Move(s.k[batch_idx]^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
-  Move(s.v[batch_idx]^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+  Move(s.batch[batch_idx].k^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+  Move(s.batch[batch_idx].v^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
   // Multihead attention - optimized
   for h := 0 to p.n_heads - 1 do
   begin
-    q_ptr := s.q[batch_idx] + h * p.head_dim;
-    att_ptr := s.att[batch_idx] + h * p.seq_len;
+    q_ptr := s.batch[batch_idx].q + h * p.head_dim;
+    att_ptr := s.batch[batch_idx].att + h * p.seq_len;
     for t := 0 to pos do
     begin
       k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
       (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) * scale;
     end;
     Softmax(att_ptr, pos + 1);
-    xb_ptr := s.xb[batch_idx] + h * p.head_dim;
+    xb_ptr := s.batch[batch_idx].xb + h * p.head_dim;
     FillDWord(xb_ptr^, p.head_dim, 0);
     for t := 0 to pos do
     begin
@@ -638,19 +641,19 @@ begin
     end;
   end;
   // Final attention matmul
-  s.xq[batch_idx].Quantize(s.xb[batch_idx], all_heads_dim);
-  s.xq[batch_idx].MatMul(s.xb[batch_idx], w.wo.GetTensor(l), all_heads_dim, p.dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, all_heads_dim);
+  s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].xb, w.wo.GetTensor(l), all_heads_dim, p.dim);
 end;
 
 procedure TTransformer.ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, batch_idx: longint);
 begin
-  self.RMSNorm(s.xb[batch_idx], s.x[batch_idx], w.rms_ffn_weight + l * p.dim, p.dim);
-  s.xq[batch_idx].Quantize(s.xb[batch_idx], p.dim);
-  s.xq[batch_idx].MatMul(s.hb[batch_idx], w.w1.GetTensor(l), p.dim, p.hidden_dim);
-  s.xq[batch_idx].MatMul(s.hb2[batch_idx], w.w3.GetTensor(l), p.dim, p.hidden_dim);
-  self.SwiGLU(s.hb[batch_idx], s.hb2[batch_idx], p.hidden_dim);
-  s.hq[batch_idx].Quantize(s.hb[batch_idx], p.hidden_dim);
-  s.hq[batch_idx].MatMul(s.xb[batch_idx], w.w2.GetTensor(l), p.hidden_dim, p.dim);
+  self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, w.rms_ffn_weight + l * p.dim, p.dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim);
+  s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].hb, w.w1.GetTensor(l), p.dim, p.hidden_dim);
+  s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].hb2, w.w3.GetTensor(l), p.dim, p.hidden_dim);
+  self.SwiGLU(s.batch[batch_idx].hb, s.batch[batch_idx].hb2, p.hidden_dim);
+  s.batch[batch_idx].hq.Quantize(s.batch[batch_idx].hb, p.hidden_dim);
+  s.batch[batch_idx].hq.MatMul(s.batch[batch_idx].xb, w.w2.GetTensor(l), p.hidden_dim, p.dim);
 end;
 
 procedure TTransformer.ApplyResidualConnection(const x, xb: PSingle; const dim: longint);
@@ -663,9 +666,9 @@ end;
 
 procedure TTransformer.ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; batch_idx: longint);
 begin
-  self.RMSNorm(s.x[batch_idx], s.x[batch_idx], w.rms_final_weight, p.dim);
-  s.xq[batch_idx].Quantize(s.x[batch_idx], p.dim);
-  s.xq[batch_idx].MatMul(s.logits[batch_idx], w.wcls^, p.dim, p.vocab_size);
+  self.RMSNorm(s.batch[batch_idx].x, s.batch[batch_idx].x, w.rms_final_weight, p.dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].x, p.dim);
+  s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].logits, w.wcls^, p.dim, p.vocab_size);
 end;
 
 procedure TTransformer.MallocRunState(var s: TRunState; var p: TConfig);
@@ -673,38 +676,26 @@ var
   all_heads_dim, kv_dim, i: longint;
 begin
   // Batch size for prompt evaluation
-  s.batch_size := 512;
-
   all_heads_dim := p.n_heads * p.head_dim;
   kv_dim := p.n_kv_heads * p.head_dim;
-  SetLength(s.x, s.batch_size);
-  SetLength(s.xb, s.batch_size);
-  SetLength(s.hb, s.batch_size);
-  SetLength(s.hb2, s.batch_size);
-  SetLength(s.xq, s.batch_size);
-  SetLength(s.hq, s.batch_size);
-  SetLength(s.q, s.batch_size);
-  SetLength(s.k, s.batch_size);
-  SetLength(s.v, s.batch_size);
-  SetLength(s.att, s.batch_size);
-  SetLength(s.logits, s.batch_size);
-  for i := 0 to s.batch_size - 1 do
+  SetLength(s.batch, 512);
+  for i := 0 to Length(s.batch) - 1 do
   begin
-    s.x[i] := AllocMem(p.dim * SizeOf(single));
-    s.xb[i] := AllocMem(all_heads_dim * SizeOf(single));
-    s.hb[i] := AllocMem(p.hidden_dim * SizeOf(single));
-    s.hb2[i] := AllocMem(p.hidden_dim * SizeOf(single));
-    s.xq[i].q := AllocMem(all_heads_dim * SizeOf(shortint));
-    s.xq[i].s := AllocMem((all_heads_dim div p.group_size) * SizeOf(single));
-    s.xq[i].group_size := p.group_size;
-    s.hq[i].q := AllocMem(p.hidden_dim * SizeOf(shortint));
-    s.hq[i].s := AllocMem((p.hidden_dim div p.group_size) * SizeOf(single));
-    s.hq[i].group_size := p.group_size;
-    s.q[i] := AllocMem(all_heads_dim * SizeOf(single));
-    s.k[i] := AllocMem(kv_dim * SizeOf(single));
-    s.v[i] := AllocMem(kv_dim * SizeOf(single));
-    s.att[i] := AllocMem(p.n_heads * p.seq_len * SizeOf(single));
-    s.logits[i] := AllocMem(p.vocab_size * SizeOf(single));
+    s.batch[i].x := AllocMem(p.dim * SizeOf(single));
+    s.batch[i].xb := AllocMem(all_heads_dim * SizeOf(single));
+    s.batch[i].hb := AllocMem(p.hidden_dim * SizeOf(single));
+    s.batch[i].hb2 := AllocMem(p.hidden_dim * SizeOf(single));
+    s.batch[i].xq.q := AllocMem(all_heads_dim * SizeOf(shortint));
+    s.batch[i].xq.s := AllocMem((all_heads_dim div p.group_size) * SizeOf(single));
+    s.batch[i].xq.group_size := p.group_size;
+    s.batch[i].hq.q := AllocMem(p.hidden_dim * SizeOf(shortint));
+    s.batch[i].hq.s := AllocMem((p.hidden_dim div p.group_size) * SizeOf(single));
+    s.batch[i].hq.group_size := p.group_size;
+    s.batch[i].q := AllocMem(all_heads_dim * SizeOf(single));
+    s.batch[i].k := AllocMem(kv_dim * SizeOf(single));
+    s.batch[i].v := AllocMem(kv_dim * SizeOf(single));
+    s.batch[i].att := AllocMem(p.n_heads * p.seq_len * SizeOf(single));
+    s.batch[i].logits := AllocMem(p.vocab_size * SizeOf(single));
   end;
   s.key_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
   s.value_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
@@ -714,34 +705,22 @@ procedure TTransformer.FreeRunState(var s: TRunState);
 var
   i: integer;
 begin
-  for i := 0 to High(s.x) do
-    if Assigned(s.x[i]) then FreeMem(s.x[i]);
-  for i := 0 to High(s.xb) do
-    if Assigned(s.xb[i]) then FreeMem(s.xb[i]);
-  for i := 0 to High(s.hb) do
-    if Assigned(s.hb[i]) then FreeMem(s.hb[i]);
-  for i := 0 to High(s.hb2) do
-    if Assigned(s.hb2[i]) then FreeMem(s.hb2[i]);
-  for i := 0 to High(s.xq) do
+  for i := 0 to High(s.batch) do
   begin
-    if Assigned(s.xq[i].q) then FreeMem(s.xq[i].q);
-    if Assigned(s.xq[i].s) then FreeMem(s.xq[i].s);
+    if Assigned(s.batch[i].x) then FreeMem(s.batch[i].x);
+    if Assigned(s.batch[i].xb) then FreeMem(s.batch[i].xb);
+    if Assigned(s.batch[i].hb) then FreeMem(s.batch[i].hb);
+    if Assigned(s.batch[i].hb2) then FreeMem(s.batch[i].hb2);
+    if Assigned(s.batch[i].xq.q) then FreeMem(s.batch[i].xq.q);
+    if Assigned(s.batch[i].xq.s) then FreeMem(s.batch[i].xq.s);
+    if Assigned(s.batch[i].hq.q) then FreeMem(s.batch[i].hq.q);
+    if Assigned(s.batch[i].hq.s) then FreeMem(s.batch[i].hq.s);
+    if Assigned(s.batch[i].q) then FreeMem(s.batch[i].q);
+    if Assigned(s.batch[i].k) then FreeMem(s.batch[i].k);
+    if Assigned(s.batch[i].v) then FreeMem(s.batch[i].v);
+    if Assigned(s.batch[i].att) then FreeMem(s.batch[i].att);
+    if Assigned(s.batch[i].logits) then FreeMem(s.batch[i].logits);
   end;
-  for i := 0 to High(s.hq) do
-  begin
-    if Assigned(s.hq[i].q) then FreeMem(s.hq[i].q);
-    if Assigned(s.hq[i].s) then FreeMem(s.hq[i].s);
-  end;
-  for i := 0 to High(s.q) do
-    if Assigned(s.q[i]) then FreeMem(s.q[i]);
-  for i := 0 to High(s.k) do
-    if Assigned(s.k[i]) then FreeMem(s.k[i]);
-  for i := 0 to High(s.v) do
-    if Assigned(s.v[i]) then FreeMem(s.v[i]);
-  for i := 0 to High(s.att) do
-    if Assigned(s.att[i]) then FreeMem(s.att[i]);
-  for i := 0 to High(s.logits) do
-    if Assigned(s.logits[i]) then FreeMem(s.logits[i]);
   if Assigned(s.key_cache) then FreeMem(s.key_cache);
   if Assigned(s.value_cache) then FreeMem(s.value_cache);
 end;
@@ -796,24 +775,24 @@ begin
     begin
       pos := (positions + i)^;
       // RMSNorm and QKV matmuls, K/V cache update only
-      self.RMSNorm(s^.xb[i], s^.x[i], w^.rms_att_weight + l * p^.dim, p^.dim);
-      s^.xq[i].Quantize(s^.xb[i], p^.dim);
-      s^.xq[i].MatMul(s^.q[i], w^.wq.GetTensor(l), p^.dim, p^.n_heads * p^.head_dim);
-      s^.xq[i].MatMul(s^.k[i], w^.wk.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
-      s^.xq[i].MatMul(s^.v[i], w^.wv.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
+      self.RMSNorm(s^.batch[i].xb, s^.batch[i].x, w^.rms_att_weight + l * p^.dim, p^.dim);
+      s^.batch[i].xq.Quantize(s^.batch[i].xb, p^.dim);
+      s^.batch[i].xq.MatMul(s^.batch[i].q, w^.wq.GetTensor(l), p^.dim, p^.n_heads * p^.head_dim);
+      s^.batch[i].xq.MatMul(s^.batch[i].k, w^.wk.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
+      s^.batch[i].xq.MatMul(s^.batch[i].v, w^.wv.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
       // Q/K RMSNorm + RoPE
       // Q not needed for cache, but K is
       for  h := 0 to p^.n_kv_heads - 1 do
       begin
-        k_ptr := s^.k[i] + h * p^.head_dim;
+        k_ptr := s^.batch[i].k + h * p^.head_dim;
         self.RMSNorm(k_ptr, k_ptr, w^.k_norm_weights + l * p^.head_dim, p^.head_dim);
         self.ApplyRotaryEmbeddings(k_ptr, p^.head_dim, pos);
       end;
       // Write K/V to cache for this position
       kv_dim := p^.n_kv_heads * p^.head_dim;
       loff := l * QWord(p^.seq_len) * kv_dim;
-      Move(s^.k[i]^, (s^.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
-      Move(s^.v[i]^, (s^.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+      Move(s^.batch[i].k^, (s^.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+      Move(s^.batch[i].v^, (s^.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
     end;
     // Second pass: attention and FFN (now cache is fully populated)
     ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
@@ -824,17 +803,17 @@ end;
 
 procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
 begin
-  Move((w^.token_embedding_table + token * p^.dim)^, s^.x[batch_idx]^, p^.dim * SizeOf(single));
+  Move((w^.token_embedding_table + token * p^.dim)^, s^.batch[batch_idx].x^, p^.dim * SizeOf(single));
 end;
 
 procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
 begin
   // Attention
   self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
-  self.ApplyResidualConnection(s^.x[batch_idx], s^.xb[batch_idx], p^.dim);
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
   // FFN
   self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
-  self.ApplyResidualConnection(s^.x[batch_idx], s^.xb[batch_idx], p^.dim);
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
 end;
 
 procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
