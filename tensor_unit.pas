@@ -19,7 +19,7 @@ type
   { Quantized tensor structure }
   PInt8QuantizedTensor = ^TInt8QuantizedTensor;
 
-  TInt8QuantizedTensor = record
+  TInt8QuantizedTensor = packed record
     q: TInt8Array;    // quantized values (int8)
     s: TSingleArray;  // scaling factors
     group_size: longint; // Added for quantization/dequantization

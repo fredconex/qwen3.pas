@@ -85,10 +85,7 @@ type
   { Transformer structure }
   TTransformer = class
   private
-    procedure MapWeightsToMemory(var DataPtr: Pointer);
-    procedure MallocRunState(var s: TRunState; var p: TConfig);
-    procedure FreeRunState(var s: TRunState);
-    procedure LoadFromFile(checkpoint: string; ctx_length: longint);
+    procedure LoadModel(checkpoint_path: string; ctx_length: longint);
     function GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
 
     procedure ApplyRotaryEmbeddings(var arr: TSingleArray; const head_dim, pos: longint);
@@ -121,164 +118,141 @@ type
 
 implementation
 
-{ Memory map weights with improved structure and readability }
-procedure TTransformer.MapWeightsToMemory(var DataPtr: Pointer);
-var
-  FloatPtr: PSingle;
-  BytePtr: pbyte;
 
-  procedure AllocateFloatWeights(var WeightPtr: PSingle; ElementCount: integer);
-  begin
-    WeightPtr := FloatPtr;
-    Inc(FloatPtr, ElementCount);
-  end;
 
-  procedure AllocateFloatArray(var WeightArray: TSingleArray; ElementCount: integer);
-  var
-    i: integer;
-  begin
-    SetLength(WeightArray, ElementCount);
-    for i := 0 to ElementCount - 1 do
-    begin
-      WeightArray[i] := FloatPtr^;
-      Inc(FloatPtr);
-    end;
-  end;
-
-  procedure AllocateAndDequantizeTokens(NUM_PARTS: integer = 1);
-  var
-    TokenTableSize: integer;
-    BatchSize: integer;
-    NumBatches: integer;
-
-    // Parallel dequantization in batches
-{$HINTS OFF}
-    procedure DequantProc(BatchIdx: PtrInt; Data: Pointer; Item: TMultiThreadProcItem);
-    var
-      local_start, local_end, j: integer;
-    begin
-      local_start := BatchIdx * BatchSize;
-      local_end := local_start + BatchSize - 1;
-      if local_end >= TokenTableSize then
-        local_end := TokenTableSize - 1;
-      for j := local_start to local_end do
-        weights.token_embedding_table[j] := weights.q_tokens^.q[j] * weights.q_tokens^.s[j div weights.q_tokens^.group_size];
-    end;
-
-  begin
-    TokenTableSize := config.vocab_size * config.dim;
-
-    // Initialize quantized token embeddings (single tensor)
-    New(weights.q_tokens);
-    SetLength(weights.q_tokens^.q, TokenTableSize);
-    Move(BytePtr^, weights.q_tokens^.q[0], TokenTableSize * SizeOf(shortint));
-    Inc(BytePtr, TokenTableSize * SizeOf(shortint));
-    SetLength(weights.q_tokens^.s, TokenTableSize div config.group_size);
-    Move(BytePtr^, weights.q_tokens^.s[0], (TokenTableSize div config.group_size) * SizeOf(single));
-    Inc(BytePtr, (TokenTableSize div config.group_size) * SizeOf(single));
-    weights.q_tokens^.group_size := config.group_size;
-
-    // Allocate token embedding table
-    SetLength(weights.token_embedding_table, TokenTableSize);
-
-    // Batching
-    NumBatches := Min(NUM_PARTS, TokenTableSize);  // don't create more batches than elements
-    BatchSize := (TokenTableSize + NumBatches - 1) div NumBatches;
-    ProcThreadPool.DoParallelNested(@DequantProc, 0, NumBatches - 1, nil);
-  end;
-
-begin
-  FloatPtr := PSingle(DataPtr);
-
-  // Map float weights in order
-  AllocateFloatArray(weights.rms_att_weight, config.n_layers * config.dim);
-  AllocateFloatArray(weights.rms_ffn_weight, config.n_layers * config.dim);
-  AllocateFloatArray(weights.rms_final_weight, config.dim);
-  AllocateFloatArray(weights.q_norm_weights, config.n_layers * config.head_dim);
-  AllocateFloatArray(weights.k_norm_weights, config.n_layers * config.head_dim);
-
-  // Switch to byte pointer for quantized data
-  BytePtr := pbyte(FloatPtr);
-
-  AllocateAndDequantizeTokens(128);
-
-  // Map quantized weight matrices
-  with config do
-  begin
-    // Initialize arrays using the new type methods
-    weights.wq.Initialize(n_layers, Pointer(BytePtr), dim * (n_heads * head_dim), group_size);
-    weights.wk.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim), group_size);
-    weights.wv.Initialize(n_layers, Pointer(BytePtr), dim * (n_kv_heads * head_dim), group_size);
-    weights.wo.Initialize(n_layers, Pointer(BytePtr), (n_heads * head_dim) * dim, group_size);
-
-    // Feed-forward network weights
-    weights.w1.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim, group_size);
-    weights.w2.Initialize(n_layers, Pointer(BytePtr), hidden_dim * dim, group_size);
-    weights.w3.Initialize(n_layers, Pointer(BytePtr), dim * hidden_dim, group_size);
-
-    // Classifier weights (shared or separate)
-    if shared_classifier = 1 then
-      weights.wcls := weights.q_tokens
-    else
-    begin
-      New(weights.wcls);
-      SetLength(weights.wcls^.q, dim * vocab_size);
-      Move(BytePtr^, weights.wcls^.q[0], dim * vocab_size * SizeOf(shortint));
-      Inc(BytePtr, dim * vocab_size * SizeOf(shortint));
-      SetLength(weights.wcls^.s, dim * vocab_size div group_size);
-      Move(BytePtr^, weights.wcls^.s[0], (dim * vocab_size div group_size) * SizeOf(single));
-      Inc(BytePtr, (dim * vocab_size div group_size) * SizeOf(single));
-      weights.wcls^.group_size := group_size;
-    end;
-  end;
-
-  // Update the data pointer
-  DataPtr := BytePtr;
-end;
-
-{ Read checkpoint }
-procedure TTransformer.LoadFromFile(checkpoint: string; ctx_length: longint);
+{ Streamlined model loading - consolidates all loading steps }
+procedure TTransformer.LoadModel(checkpoint_path: string; ctx_length: longint);
 var
   fs: TFileStream;
-  weights_ptr: Pointer;
-begin
-  fs := TFileStream.Create(checkpoint, fmOpenRead);
-  try
-    WriteLn('checkpoint: ' + checkpoint);
+  float_ptr: PSingle;
+  byte_ptr: PByte;
+  token_table_size, i: integer;
+  all_heads_dim, kv_dim: longint;
+  
+  procedure LoadFloatWeights(var weight_array: TSingleArray; count: integer);
+  var j: integer;
+  begin
+    SetLength(weight_array, count);
+    for j := 0 to count - 1 do
+    begin
+      weight_array[j] := float_ptr^;
+      Inc(float_ptr);
+    end;
+  end;
 
+  procedure LoadQuantizedTensor(var tensor: PInt8QuantizedTensor; size: integer);
+  begin
+    New(tensor);
+    SetLength(tensor^.q, size);
+    Move(byte_ptr^, tensor^.q[0], size * SizeOf(shortint));
+    Inc(byte_ptr, size * SizeOf(shortint));
+    SetLength(tensor^.s, size div config.group_size);
+    Move(byte_ptr^, tensor^.s[0], (size div config.group_size) * SizeOf(single));
+    Inc(byte_ptr, (size div config.group_size) * SizeOf(single));
+    tensor^.group_size := config.group_size;
+  end;
+
+begin
+  WriteLn('Loading model: ', checkpoint_path);
+  
+  // Step 1: Load file into memory
+  fs := TFileStream.Create(checkpoint_path, fmOpenRead);
+  try
     file_size := fs.Size;
     GetMem(Data, file_size);
     fs.ReadBuffer(Data^, file_size);
-
-    // Read config from first 256 bytes
-    Move(Data^, config, SizeOf(TConfig));
-    if config.magic_number <> $616a6331 then
-    begin
-      WriteLn(StdErr, 'File ', checkpoint, ' is not a qwen3.c checkpoint');
-      Halt(1);
-    end;
-
-    if config.version <> 1 then
-    begin
-      WriteLn(StdErr, 'Checkpoint ', checkpoint, ' is version ', config.version, ', need version 1');
-      Halt(1);
-    end;
-
-    if (ctx_length <> 0) and (ctx_length <= config.seq_len) then
-      config.seq_len := ctx_length;
-
-    weights_ptr := PChar(Data) + 256;
-    MapWeightsToMemory(weights_ptr);
   finally
     fs.Free;
   end;
+  
+  // Step 2: Load and validate configuration
+  Move(Data^, config, SizeOf(TConfig));
+  if config.magic_number <> $616a6331 then
+  begin
+    WriteLn(StdErr, 'Error: Invalid checkpoint format');
+    Halt(1);
+  end;
+  if config.version <> 1 then
+  begin
+    WriteLn(StdErr, 'Error: Unsupported version ', config.version);
+    Halt(1);
+  end;
+  
+  // Apply context length override
+  if (ctx_length > 0) and (ctx_length <= config.seq_len) then
+    config.seq_len := ctx_length;
+  
+  // Step 3: Load weights (skip 256-byte header)
+  float_ptr := PSingle(PChar(Data) + 256);
+  
+  // Load normalization weights
+  LoadFloatWeights(weights.rms_att_weight, config.n_layers * config.dim);
+  LoadFloatWeights(weights.rms_ffn_weight, config.n_layers * config.dim);
+  LoadFloatWeights(weights.rms_final_weight, config.dim);
+  LoadFloatWeights(weights.q_norm_weights, config.n_layers * config.head_dim);
+  LoadFloatWeights(weights.k_norm_weights, config.n_layers * config.head_dim);
+
+  // Switch to quantized data
+  byte_ptr := PByte(float_ptr);
+
+  // Load token embeddings
+  token_table_size := config.vocab_size * config.dim;
+  LoadQuantizedTensor(weights.q_tokens, token_table_size);
+  
+  // Dequantize token embeddings for fast access
+  SetLength(weights.token_embedding_table, token_table_size);
+  for i := 0 to token_table_size - 1 do
+    weights.token_embedding_table[i] := weights.q_tokens^.q[i] * weights.q_tokens^.s[i div config.group_size];
+
+  // Load attention and FFN weights
+  weights.wq.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * (config.n_heads * config.head_dim), config.group_size);
+  weights.wk.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * (config.n_kv_heads * config.head_dim), config.group_size);
+  weights.wv.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * (config.n_kv_heads * config.head_dim), config.group_size);
+  weights.wo.Initialize(config.n_layers, Pointer(byte_ptr), (config.n_heads * config.head_dim) * config.dim, config.group_size);
+  weights.w1.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * config.hidden_dim, config.group_size);
+  weights.w2.Initialize(config.n_layers, Pointer(byte_ptr), config.hidden_dim * config.dim, config.group_size);
+  weights.w3.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * config.hidden_dim, config.group_size);
+
+  // Load classifier weights
+  if config.shared_classifier = 1 then
+    weights.wcls := weights.q_tokens
+  else
+    LoadQuantizedTensor(weights.wcls, config.dim * config.vocab_size);
+  
+  // Step 4: Initialize runtime state
+  all_heads_dim := config.n_heads * config.head_dim;
+  kv_dim := config.n_kv_heads * config.head_dim;
+  
+  SetLength(state.batch, 512);
+  for i := 0 to Length(state.batch) - 1 do
+  begin
+    state.batch[i].xq.group_size := config.group_size;
+    state.batch[i].hq.group_size := config.group_size;
+    SetLength(state.batch[i].x, config.dim);
+    SetLength(state.batch[i].xb, all_heads_dim);
+    SetLength(state.batch[i].hb, config.hidden_dim);
+    SetLength(state.batch[i].hb2, config.hidden_dim);
+    SetLength(state.batch[i].xq.q, all_heads_dim);
+    SetLength(state.batch[i].xq.s, all_heads_dim div config.group_size);
+    SetLength(state.batch[i].hq.q, config.hidden_dim);
+    SetLength(state.batch[i].hq.s, config.hidden_dim div config.group_size);
+    SetLength(state.batch[i].q, all_heads_dim);
+    SetLength(state.batch[i].k, kv_dim);
+    SetLength(state.batch[i].v, kv_dim);
+    SetLength(state.batch[i].att, config.n_heads * config.seq_len);
+    SetLength(state.batch[i].logits, config.vocab_size);
+  end;
+  
+  SetLength(state.key_cache, config.n_layers * QWord(config.seq_len) * kv_dim);
+  SetLength(state.value_cache, config.n_layers * QWord(config.seq_len) * kv_dim);
+  
+  WriteLn('Model loaded successfully');
 end;
 
 { TTransformer method implementations }
 constructor TTransformer.Create(checkpoint_path: string; ctx_length: longint);
 begin
-  LoadFromFile(checkpoint_path, ctx_length);
-  MallocRunState(self.state, self.config);
+  LoadModel(checkpoint_path, ctx_length);
 end;
 
 destructor TTransformer.Destroy;
@@ -289,7 +263,7 @@ begin
   if self.weights.wcls <> self.weights.q_tokens then
     Dispose(self.weights.wcls);
   FreeMem(self.Data);
-  FreeRunState(self.state);
+  //FreeRunState(self.state);
   inherited Destroy;
 end;
 
@@ -699,42 +673,6 @@ begin
   self.RMSNorm(s.batch[batch_idx].x, s.batch[batch_idx].x, @w.rms_final_weight[0], p.dim);
   s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].x, p.dim, p.n_heads * p.head_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].logits, w.wcls^, p.dim, p.vocab_size);
-end;
-
-procedure TTransformer.MallocRunState(var s: TRunState; var p: TConfig);
-var
-  all_heads_dim, kv_dim, i: longint;
-begin
-  // Batch size for prompt evaluation
-  all_heads_dim := p.n_heads * p.head_dim;
-  kv_dim := p.n_kv_heads * p.head_dim;
-  SetLength(s.batch, 512);
-  for i := 0 to Length(s.batch) - 1 do
-  begin
-    SetLength(s.batch[i].x, p.dim);
-    SetLength(s.batch[i].xb, all_heads_dim);
-    SetLength(s.batch[i].hb, p.hidden_dim);
-    SetLength(s.batch[i].hb2, p.hidden_dim);
-    SetLength(s.batch[i].xq.q, all_heads_dim);
-    SetLength(s.batch[i].xq.s, all_heads_dim div p.group_size);
-    s.batch[i].xq.group_size := p.group_size;
-    SetLength(s.batch[i].hq.q, p.hidden_dim);
-    SetLength(s.batch[i].hq.s, p.hidden_dim div p.group_size);
-    s.batch[i].hq.group_size := p.group_size;
-    SetLength(s.batch[i].q, all_heads_dim);
-    SetLength(s.batch[i].k, kv_dim);
-    SetLength(s.batch[i].v, kv_dim);
-    SetLength(s.batch[i].att, p.n_heads * p.seq_len);
-    SetLength(s.batch[i].logits, p.vocab_size);
-  end;
-  SetLength(s.key_cache, p.n_layers * QWord(p.seq_len) * kv_dim);
-  SetLength(s.value_cache, p.n_layers * QWord(p.seq_len) * kv_dim);
-end;
-
-procedure TTransformer.FreeRunState(var s: TRunState);
-begin
-  // Arrays in TBatchState and cache arrays are automatically freed by Pascal
-  // TSingleArray types are automatically managed
 end;
 
 procedure TTransformer.ForwardBatchPrompt(tokens, positions: PLongInt; batch_count: integer);
