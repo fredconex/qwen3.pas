@@ -41,19 +41,19 @@ type
   { Transformer weights }
   TTransformerWeights = record
     q_tokens: PInt8QuantizedTensor;           // Quantized token embedding tensor (vocab_size x dim)
-    token_embedding_table: PSingle;           // Dequantized token embedding table (vocab_size x dim)
-    rms_att_weight: PSingle;                  // RMSNorm weights for attention layers (n_layers x dim)
-    rms_ffn_weight: PSingle;                  // RMSNorm weights for FFN layers (n_layers x dim)
+    token_embedding_table: TSingleArray;     // Dequantized token embedding table (vocab_size x dim)
+    rms_att_weight: TSingleArray;            // RMSNorm weights for attention layers (n_layers x dim)
+    rms_ffn_weight: TSingleArray;            // RMSNorm weights for FFN layers (n_layers x dim)
     wq: TInt8QuantizedTensorArray;            // Quantized weight matrices for Q projection (n_layers x dim x (n_heads x head_dim))
     wk: TInt8QuantizedTensorArray;            // Quantized weight matrices for K projection (n_layers x dim x (n_kv_heads x head_dim))
     wv: TInt8QuantizedTensorArray;            // Quantized weight matrices for V projection (n_layers x dim x (n_kv_heads x head_dim))
     wo: TInt8QuantizedTensorArray;            // Quantized weight matrices for output projection (n_layers x (n_heads x head_dim) x dim)
-    q_norm_weights: PSingle;                  // RMSNorm weights for Q heads (n_layers x head_dim)
-    k_norm_weights: PSingle;                  // RMSNorm weights for K heads (n_layers x head_dim)
+    q_norm_weights: TSingleArray;            // RMSNorm weights for Q heads (n_layers x head_dim)
+    k_norm_weights: TSingleArray;            // RMSNorm weights for K heads (n_layers x head_dim)
     w1: TInt8QuantizedTensorArray;            // Quantized weight matrices for FFN first layer (n_layers x dim x hidden_dim)
     w2: TInt8QuantizedTensorArray;            // Quantized weight matrices for FFN second layer (n_layers x hidden_dim x dim)
     w3: TInt8QuantizedTensorArray;            // Quantized weight matrices for FFN gate layer (n_layers x dim x hidden_dim)
-    rms_final_weight: PSingle;                // RMSNorm weights for final normalization (dim)
+    rms_final_weight: TSingleArray;          // RMSNorm weights for final normalization (dim)
     wcls: PInt8QuantizedTensor;               // Quantized classifier weights (dim x vocab_size) or shared with q_tokens
   end;
 
@@ -133,6 +133,18 @@ var
     Inc(FloatPtr, ElementCount);
   end;
 
+  procedure AllocateFloatArray(var WeightArray: TSingleArray; ElementCount: integer);
+  var
+    i: integer;
+  begin
+    SetLength(WeightArray, ElementCount);
+    for i := 0 to ElementCount - 1 do
+    begin
+      WeightArray[i] := FloatPtr^;
+      Inc(FloatPtr);
+    end;
+  end;
+
   procedure AllocateAndDequantizeTokens(NUM_PARTS: integer = 1);
   var
     TokenTableSize: integer;
@@ -150,7 +162,7 @@ var
       if local_end >= TokenTableSize then
         local_end := TokenTableSize - 1;
       for j := local_start to local_end do
-        (weights.token_embedding_table + j)^ := weights.q_tokens^.q[j] * weights.q_tokens^.s[j div weights.q_tokens^.group_size];
+        weights.token_embedding_table[j] := weights.q_tokens^.q[j] * weights.q_tokens^.s[j div weights.q_tokens^.group_size];
     end;
 
   begin
@@ -167,7 +179,7 @@ var
     weights.q_tokens^.group_size := config.group_size;
 
     // Allocate token embedding table
-    GetMem(weights.token_embedding_table, TokenTableSize * SizeOf(single));
+    SetLength(weights.token_embedding_table, TokenTableSize);
 
     // Batching
     NumBatches := Min(NUM_PARTS, TokenTableSize);  // don't create more batches than elements
@@ -179,11 +191,11 @@ begin
   FloatPtr := PSingle(DataPtr);
 
   // Map float weights in order
-  AllocateFloatWeights(weights.rms_att_weight, config.n_layers * config.dim);
-  AllocateFloatWeights(weights.rms_ffn_weight, config.n_layers * config.dim);
-  AllocateFloatWeights(weights.rms_final_weight, config.dim);
-  AllocateFloatWeights(weights.q_norm_weights, config.n_layers * config.head_dim);
-  AllocateFloatWeights(weights.k_norm_weights, config.n_layers * config.head_dim);
+  AllocateFloatArray(weights.rms_att_weight, config.n_layers * config.dim);
+  AllocateFloatArray(weights.rms_ffn_weight, config.n_layers * config.dim);
+  AllocateFloatArray(weights.rms_final_weight, config.dim);
+  AllocateFloatArray(weights.q_norm_weights, config.n_layers * config.head_dim);
+  AllocateFloatArray(weights.k_norm_weights, config.n_layers * config.head_dim);
 
   // Switch to byte pointer for quantized data
   BytePtr := pbyte(FloatPtr);
@@ -272,7 +284,7 @@ end;
 destructor TTransformer.Destroy;
 begin
   Dispose(self.weights.q_tokens);
-  FreeMem(self.weights.token_embedding_table);
+  // token_embedding_table is now TSingleArray and automatically freed
   // Arrays are automatically freed by Pascal
   if self.weights.wcls <> self.weights.q_tokens then
     Dispose(self.weights.wcls);
@@ -597,7 +609,7 @@ begin
   all_heads_dim := p.n_heads * p.head_dim;
   loff := l * QWord(p.seq_len) * kv_dim;
   // Attention RMS norm
-  self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, w.rms_att_weight + l * p.dim, p.dim);
+  self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, @w.rms_att_weight[l * p.dim], p.dim);
   // QKV matmuls
   s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim, all_heads_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].q, w.wq.GetTensor(l), p.dim, all_heads_dim);
@@ -610,7 +622,7 @@ begin
     SetLength(temp_head_array, p.head_dim);
     for i := 0 to p.head_dim - 1 do
       temp_head_array[i] := s.batch[batch_idx].q[h * p.head_dim + i];
-    self.RMSNorm(temp_head_array, temp_head_array, w.q_norm_weights + l * p.head_dim, p.head_dim);
+    self.RMSNorm(temp_head_array, temp_head_array, @w.q_norm_weights[l * p.head_dim], p.head_dim);
     self.ApplyRotaryEmbeddings(temp_head_array, p.head_dim, pos);
     // Copy back to the main array
     for i := 0 to p.head_dim - 1 do
@@ -623,7 +635,7 @@ begin
     SetLength(temp_head_array, p.head_dim);
     for i := 0 to p.head_dim - 1 do
       temp_head_array[i] := s.batch[batch_idx].k[h * p.head_dim + i];
-    self.RMSNorm(temp_head_array, temp_head_array, w.k_norm_weights + l * p.head_dim, p.head_dim);
+    self.RMSNorm(temp_head_array, temp_head_array, @w.k_norm_weights[l * p.head_dim], p.head_dim);
     self.ApplyRotaryEmbeddings(temp_head_array, p.head_dim, pos);
     // Copy back to the main array
     for i := 0 to p.head_dim - 1 do
@@ -665,7 +677,7 @@ end;
 
 procedure TTransformer.ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, batch_idx: longint);
 begin
-  self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, w.rms_ffn_weight + l * p.dim, p.dim);
+  self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, @w.rms_ffn_weight[l * p.dim], p.dim);
   s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim, p.n_heads * p.head_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].hb, w.w1.GetTensor(l), p.dim, p.hidden_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].hb2, w.w3.GetTensor(l), p.dim, p.hidden_dim);
@@ -684,7 +696,7 @@ end;
 
 procedure TTransformer.ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; batch_idx: longint);
 begin
-  self.RMSNorm(s.batch[batch_idx].x, s.batch[batch_idx].x, w.rms_final_weight, p.dim);
+  self.RMSNorm(s.batch[batch_idx].x, s.batch[batch_idx].x, @w.rms_final_weight[0], p.dim);
   s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].x, p.dim, p.n_heads * p.head_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].logits, w.wcls^, p.dim, p.vocab_size);
 end;
@@ -775,7 +787,7 @@ begin
     begin
       pos := (positions + i)^;
       // RMSNorm and QKV matmuls, K/V cache update only
-      self.RMSNorm(s^.batch[i].xb, s^.batch[i].x, w^.rms_att_weight + l * p^.dim, p^.dim);
+      self.RMSNorm(s^.batch[i].xb, s^.batch[i].x, @w^.rms_att_weight[l * p^.dim], p^.dim);
       s^.batch[i].xq.Quantize(s^.batch[i].xb, p^.dim, p^.n_heads * p^.head_dim);
       s^.batch[i].xq.MatMul(s^.batch[i].q, w^.wq.GetTensor(l), p^.dim, p^.n_heads * p^.head_dim);
       s^.batch[i].xq.MatMul(s^.batch[i].k, w^.wk.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
@@ -788,7 +800,7 @@ begin
         SetLength(temp_head_array, p^.head_dim);
         for j := 0 to p^.head_dim - 1 do
           temp_head_array[j] := s^.batch[i].k[h * p^.head_dim + j];
-        self.RMSNorm(temp_head_array, temp_head_array, w^.k_norm_weights + l * p^.head_dim, p^.head_dim);
+        self.RMSNorm(temp_head_array, temp_head_array, @w^.k_norm_weights[l * p^.head_dim], p^.head_dim);
         self.ApplyRotaryEmbeddings(temp_head_array, p^.head_dim, pos);
         // Copy back to the main array
         for j := 0 to p^.head_dim - 1 do
@@ -815,7 +827,7 @@ var
   i: integer;
 begin
   for i := 0 to p^.dim - 1 do
-    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+    s^.batch[batch_idx].x[i] := w^.token_embedding_table[token * p^.dim + i];
 end;
 
 procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
