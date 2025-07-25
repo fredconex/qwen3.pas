@@ -74,8 +74,8 @@ type
 
   TRunState = record
     batch: array of TBatchState;
-    key_cache: PSingle;   // Cached keys for all layers (n_layers x seq_len x n_kv_heads x head_dim)
-    value_cache: PSingle; // Cached values for all layers (n_layers x seq_len x n_kv_heads x head_dim)
+    key_cache: TSingleArray;   // Cached keys for all layers (n_layers x seq_len x n_kv_heads x head_dim)
+    value_cache: TSingleArray; // Cached values for all layers (n_layers x seq_len x n_kv_heads x head_dim)
   end;
 
   PConfig = ^TConfig;
@@ -632,8 +632,8 @@ begin
   // NOW write K/V to cache for this position (after K RMSNorm+RoPE)
   for i := 0 to kv_dim - 1 do
   begin
-    (s.key_cache + loff + pos * kv_dim + i)^ := s.batch[batch_idx].k[i];
-    (s.value_cache + loff + pos * kv_dim + i)^ := s.batch[batch_idx].v[i];
+    s.key_cache[loff + pos * kv_dim + i] := s.batch[batch_idx].k[i];
+    s.value_cache[loff + pos * kv_dim + i] := s.batch[batch_idx].v[i];
   end;
   // Multihead attention - optimized
   for h := 0 to p.n_heads - 1 do
@@ -642,7 +642,7 @@ begin
     att_ptr := @s.batch[batch_idx].att[h * p.seq_len];
     for t := 0 to pos do
     begin
-      k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
+      k_ptr := @s.key_cache[loff + t * kv_dim + (h div kv_mul) * p.head_dim];
       (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) * scale;
     end;
     Softmax(att_ptr, pos + 1);
@@ -651,7 +651,7 @@ begin
       s.batch[batch_idx].xb[h * p.head_dim + i] := 0;
     for t := 0 to pos do
     begin
-      v_ptr := s.value_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
+      v_ptr := @s.value_cache[loff + t * kv_dim + (h div kv_mul) * p.head_dim];
 
       // Apply Scalar
       for i := 0 to p.head_dim - 1 do
@@ -715,16 +715,14 @@ begin
     SetLength(s.batch[i].att, p.n_heads * p.seq_len);
     SetLength(s.batch[i].logits, p.vocab_size);
   end;
-  s.key_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
-  s.value_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
+  SetLength(s.key_cache, p.n_layers * QWord(p.seq_len) * kv_dim);
+  SetLength(s.value_cache, p.n_layers * QWord(p.seq_len) * kv_dim);
 end;
 
 procedure TTransformer.FreeRunState(var s: TRunState);
 begin
-  // Arrays in TBatchState are automatically freed by Pascal
-  // Only need to free the cache arrays that are still PSingle
-  if Assigned(s.key_cache) then FreeMem(s.key_cache);
-  if Assigned(s.value_cache) then FreeMem(s.value_cache);
+  // Arrays in TBatchState and cache arrays are automatically freed by Pascal
+  // TSingleArray types are automatically managed
 end;
 
 procedure TTransformer.ForwardBatchPrompt(tokens, positions: PLongInt; batch_count: integer);
@@ -801,8 +799,8 @@ begin
       loff := l * QWord(p^.seq_len) * kv_dim;
       for j := 0 to kv_dim - 1 do
       begin
-        (s^.key_cache + loff + pos * kv_dim + j)^ := s^.batch[i].k[j];
-        (s^.value_cache + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+        s^.key_cache[loff + pos * kv_dim + j] := s^.batch[i].k[j];
+        s^.value_cache[loff + pos * kv_dim + j] := s^.batch[i].v[j];
       end;
     end;
     // Second pass: attention and FFN (now cache is fully populated)
