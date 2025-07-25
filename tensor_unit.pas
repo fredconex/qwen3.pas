@@ -16,12 +16,12 @@ type
   PInt8QuantizedTensor = ^TInt8QuantizedTensor;
 
   TInt8QuantizedTensor = record
-    q: PInt8;    // quantized values (int8)
+    q: Array of Int8;    // quantized values (int8)
     s: PSingle;  // scaling factors
     group_size: longint; // Added for quantization/dequantization
 
    // procedure Dequantize(x: PSingle; n: longint);
-    procedure Quantize(x: PSingle; n: longint);
+    procedure Quantize(x: PSingle; n, size: longint);
     procedure MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
   end;
 
@@ -54,13 +54,16 @@ begin
     (x + i)^ := (self.q + i)^ * (self.s + (i div self.group_size))^;
 end; }
 
-procedure TInt8QuantizedTensor.Quantize(x: PSingle; n: longint);
+procedure TInt8QuantizedTensor.Quantize(x: PSingle; n, size: longint);
 var
   group, i: longint;
   wmax, scale, quant_value: single;
   quantized: shortint;
   current_ptr: PSingle;
 begin
+  // Ensure array is properly sized
+  SetLength(self.q, size);
+  
   for group := 0 to (n div self.group_size) - 1 do
   begin
     current_ptr := x + group * self.group_size;
@@ -79,7 +82,7 @@ begin
     begin
       quant_value := (current_ptr + i)^ / scale;
       quantized := Round(quant_value);
-      (self.q + group * self.group_size + i)^ := quantized;
+      self.q[group * self.group_size + i] := quantized;
     end;
   end;
 end;
@@ -88,9 +91,10 @@ end;
 procedure TInt8QuantizedTensorArray.Initialize(Count: integer; var DataPtr: Pointer; ElementsPerTensor: integer; GroupSize: longint);
 var
   CurrentPtr: pbyte;
-  i: integer;
+  i, j: integer;
   QuantizedDataSize: integer;
   ScaleDataSize: integer;
+  SourcePtr: PInt8;
 begin
   SetLength(Data, Count);
   CurrentPtr := pbyte(DataPtr);
@@ -100,8 +104,11 @@ begin
   // Initialize each tensor in the array
   for i := 0 to Count - 1 do
   begin
-    // Set quantized data pointer for tensor i
-    Data[i].q := PShortInt(CurrentPtr);
+    // Initialize quantized data array for tensor i
+    SetLength(Data[i].q, ElementsPerTensor);
+    SourcePtr := PInt8(CurrentPtr);
+    for j := 0 to ElementsPerTensor - 1 do
+      Data[i].q[j] := (SourcePtr + j)^;
     Inc(CurrentPtr, QuantizedDataSize);
 
     // Set scale data pointer for tensor i
@@ -154,7 +161,7 @@ var
 begin
   for i := 0 to Length(Data) - 1 do
   begin
-    if (Data[i].q = nil) or (Data[i].s = nil) then
+    if (Length(Data[i].q) = 0) or (Data[i].s = nil) then
     begin
       WriteLn(StdErr, 'Error: Invalid tensor at index ', i, ' - null pointers detected');
       Halt(1);
@@ -554,15 +561,11 @@ var
   x_scales, w_scales: PSingle;
   groups: integer;
   dot_func: function(const x_base, w_base: PShortInt): longint;
-  x_qdata: PInt8;
   x_sdata: PSingle;
-  w_qdata: PInt8;
   w_sdata: PSingle;
 begin
   // Cache object fields locally
-  x_qdata := self.q;
   x_sdata := self.s;
-  w_qdata := w.q;
   w_sdata := w.s;
 
   groups := n div self.group_size;
@@ -585,12 +588,12 @@ begin
   begin
     val := 0.0;
 
-    // Set up weight pointers
-    w_base := @w_qdata[i * n];
+    // Set up weight pointers - now using array access
+    w_base := @w.q[i * n];
     w_scales := @w_sdata[i * groups];
 
-    // Set up input quantized data and scales
-    x_base := x_qdata;
+    // Set up input quantized data and scales - now using array access
+    x_base := @self.q[0];
     x_scales := x_sdata;
 
     // Fused loop: compute each group's dot product and apply scale immediately

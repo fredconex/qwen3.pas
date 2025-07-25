@@ -147,15 +147,16 @@ var
       if local_end >= TokenTableSize then
         local_end := TokenTableSize - 1;
       for j := local_start to local_end do
-        (weights.token_embedding_table + j)^ := (weights.q_tokens^.q + j)^ * (weights.q_tokens^.s + (j div weights.q_tokens^.group_size))^;
+        (weights.token_embedding_table + j)^ := weights.q_tokens^.q[j] * (weights.q_tokens^.s + (j div weights.q_tokens^.group_size))^;
     end;
 
   begin
     TokenTableSize := config.vocab_size * config.dim;
 
     // Initialize quantized token embeddings (single tensor)
-    GetMem(weights.q_tokens, SizeOf(TInt8QuantizedTensor));
-    weights.q_tokens^.q := PShortInt(BytePtr);
+    New(weights.q_tokens);
+    SetLength(weights.q_tokens^.q, TokenTableSize);
+    Move(BytePtr^, weights.q_tokens^.q[0], TokenTableSize * SizeOf(shortint));
     Inc(BytePtr, TokenTableSize * SizeOf(shortint));
     weights.q_tokens^.s := PSingle(BytePtr);
     Inc(BytePtr, (TokenTableSize div config.group_size) * SizeOf(single));
@@ -204,11 +205,13 @@ begin
       weights.wcls := weights.q_tokens
     else
     begin
-      GetMem(weights.wcls, SizeOf(TInt8QuantizedTensor));
-      weights.wcls^.q := PShortInt(BytePtr);
+      New(weights.wcls);
+      SetLength(weights.wcls^.q, dim * vocab_size);
+      Move(BytePtr^, weights.wcls^.q[0], dim * vocab_size * SizeOf(shortint));
       Inc(BytePtr, dim * vocab_size * SizeOf(shortint));
       weights.wcls^.s := PSingle(BytePtr);
       Inc(BytePtr, (dim * vocab_size div group_size) * SizeOf(single));
+      weights.wcls^.group_size := group_size;
     end;
   end;
 
@@ -263,11 +266,11 @@ end;
 
 destructor TTransformer.Destroy;
 begin
-  FreeMem(self.weights.q_tokens);
+  Dispose(self.weights.q_tokens);
   FreeMem(self.weights.token_embedding_table);
   // Arrays are automatically freed by Pascal
   if self.weights.wcls <> self.weights.q_tokens then
-    FreeMem(self.weights.wcls);
+    Dispose(self.weights.wcls);
   FreeMem(self.Data);
   FreeRunState(self.state);
   inherited Destroy;
@@ -597,7 +600,7 @@ begin
   // Attention RMS norm
   self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, w.rms_att_weight + l * p.dim, p.dim);
   // QKV matmuls
-  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim, all_heads_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].q, w.wq.GetTensor(l), p.dim, all_heads_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].k, w.wk.GetTensor(l), p.dim, kv_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].v, w.wv.GetTensor(l), p.dim, kv_dim);
@@ -641,18 +644,18 @@ begin
     end;
   end;
   // Final attention matmul
-  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, all_heads_dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, all_heads_dim, all_heads_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].xb, w.wo.GetTensor(l), all_heads_dim, p.dim);
 end;
 
 procedure TTransformer.ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, batch_idx: longint);
 begin
   self.RMSNorm(s.batch[batch_idx].xb, s.batch[batch_idx].x, w.rms_ffn_weight + l * p.dim, p.dim);
-  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].xb, p.dim, p.n_heads * p.head_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].hb, w.w1.GetTensor(l), p.dim, p.hidden_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].hb2, w.w3.GetTensor(l), p.dim, p.hidden_dim);
   self.SwiGLU(s.batch[batch_idx].hb, s.batch[batch_idx].hb2, p.hidden_dim);
-  s.batch[batch_idx].hq.Quantize(s.batch[batch_idx].hb, p.hidden_dim);
+  s.batch[batch_idx].hq.Quantize(s.batch[batch_idx].hb, p.hidden_dim, p.hidden_dim);
   s.batch[batch_idx].hq.MatMul(s.batch[batch_idx].xb, w.w2.GetTensor(l), p.hidden_dim, p.dim);
 end;
 
@@ -667,7 +670,7 @@ end;
 procedure TTransformer.ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; batch_idx: longint);
 begin
   self.RMSNorm(s.batch[batch_idx].x, s.batch[batch_idx].x, w.rms_final_weight, p.dim);
-  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].x, p.dim);
+  s.batch[batch_idx].xq.Quantize(s.batch[batch_idx].x, p.dim, p.n_heads * p.head_dim);
   s.batch[batch_idx].xq.MatMul(s.batch[batch_idx].logits, w.wcls^, p.dim, p.vocab_size);
 end;
 
@@ -685,10 +688,10 @@ begin
     s.batch[i].xb := AllocMem(all_heads_dim * SizeOf(single));
     s.batch[i].hb := AllocMem(p.hidden_dim * SizeOf(single));
     s.batch[i].hb2 := AllocMem(p.hidden_dim * SizeOf(single));
-    s.batch[i].xq.q := AllocMem(all_heads_dim * SizeOf(shortint));
+    SetLength(s.batch[i].xq.q, all_heads_dim);
     s.batch[i].xq.s := AllocMem((all_heads_dim div p.group_size) * SizeOf(single));
     s.batch[i].xq.group_size := p.group_size;
-    s.batch[i].hq.q := AllocMem(p.hidden_dim * SizeOf(shortint));
+    SetLength(s.batch[i].hq.q, p.hidden_dim);
     s.batch[i].hq.s := AllocMem((p.hidden_dim div p.group_size) * SizeOf(single));
     s.batch[i].hq.group_size := p.group_size;
     s.batch[i].q := AllocMem(all_heads_dim * SizeOf(single));
@@ -711,9 +714,9 @@ begin
     if Assigned(s.batch[i].xb) then FreeMem(s.batch[i].xb);
     if Assigned(s.batch[i].hb) then FreeMem(s.batch[i].hb);
     if Assigned(s.batch[i].hb2) then FreeMem(s.batch[i].hb2);
-    if Assigned(s.batch[i].xq.q) then FreeMem(s.batch[i].xq.q);
+    // Arrays are automatically freed by Pascal
     if Assigned(s.batch[i].xq.s) then FreeMem(s.batch[i].xq.s);
-    if Assigned(s.batch[i].hq.q) then FreeMem(s.batch[i].hq.q);
+    // Arrays are automatically freed by Pascal
     if Assigned(s.batch[i].hq.s) then FreeMem(s.batch[i].hq.s);
     if Assigned(s.batch[i].q) then FreeMem(s.batch[i].q);
     if Assigned(s.batch[i].k) then FreeMem(s.batch[i].k);
@@ -776,7 +779,7 @@ begin
       pos := (positions + i)^;
       // RMSNorm and QKV matmuls, K/V cache update only
       self.RMSNorm(s^.batch[i].xb, s^.batch[i].x, w^.rms_att_weight + l * p^.dim, p^.dim);
-      s^.batch[i].xq.Quantize(s^.batch[i].xb, p^.dim);
+      s^.batch[i].xq.Quantize(s^.batch[i].xb, p^.dim, p^.n_heads * p^.head_dim);
       s^.batch[i].xq.MatMul(s^.batch[i].q, w^.wq.GetTensor(l), p^.dim, p^.n_heads * p^.head_dim);
       s^.batch[i].xq.MatMul(s^.batch[i].k, w^.wk.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
       s^.batch[i].xq.MatMul(s^.batch[i].v, w^.wv.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
