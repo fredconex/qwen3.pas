@@ -147,7 +147,7 @@ var
       if local_end >= TokenTableSize then
         local_end := TokenTableSize - 1;
       for j := local_start to local_end do
-        (weights.token_embedding_table + j)^ := weights.q_tokens^.q[j] * (weights.q_tokens^.s + (j div weights.q_tokens^.group_size))^;
+        (weights.token_embedding_table + j)^ := weights.q_tokens^.q[j] * weights.q_tokens^.s[j div weights.q_tokens^.group_size];
     end;
 
   begin
@@ -158,7 +158,8 @@ var
     SetLength(weights.q_tokens^.q, TokenTableSize);
     Move(BytePtr^, weights.q_tokens^.q[0], TokenTableSize * SizeOf(shortint));
     Inc(BytePtr, TokenTableSize * SizeOf(shortint));
-    weights.q_tokens^.s := PSingle(BytePtr);
+    SetLength(weights.q_tokens^.s, TokenTableSize div config.group_size);
+    Move(BytePtr^, weights.q_tokens^.s[0], (TokenTableSize div config.group_size) * SizeOf(single));
     Inc(BytePtr, (TokenTableSize div config.group_size) * SizeOf(single));
     weights.q_tokens^.group_size := config.group_size;
 
@@ -209,7 +210,8 @@ begin
       SetLength(weights.wcls^.q, dim * vocab_size);
       Move(BytePtr^, weights.wcls^.q[0], dim * vocab_size * SizeOf(shortint));
       Inc(BytePtr, dim * vocab_size * SizeOf(shortint));
-      weights.wcls^.s := PSingle(BytePtr);
+      SetLength(weights.wcls^.s, dim * vocab_size div group_size);
+      Move(BytePtr^, weights.wcls^.s[0], (dim * vocab_size div group_size) * SizeOf(single));
       Inc(BytePtr, (dim * vocab_size div group_size) * SizeOf(single));
       weights.wcls^.group_size := group_size;
     end;
@@ -689,10 +691,10 @@ begin
     s.batch[i].hb := AllocMem(p.hidden_dim * SizeOf(single));
     s.batch[i].hb2 := AllocMem(p.hidden_dim * SizeOf(single));
     SetLength(s.batch[i].xq.q, all_heads_dim);
-    s.batch[i].xq.s := AllocMem((all_heads_dim div p.group_size) * SizeOf(single));
+    SetLength(s.batch[i].xq.s, all_heads_dim div p.group_size);
     s.batch[i].xq.group_size := p.group_size;
     SetLength(s.batch[i].hq.q, p.hidden_dim);
-    s.batch[i].hq.s := AllocMem((p.hidden_dim div p.group_size) * SizeOf(single));
+    SetLength(s.batch[i].hq.s, p.hidden_dim div p.group_size);
     s.batch[i].hq.group_size := p.group_size;
     s.batch[i].q := AllocMem(all_heads_dim * SizeOf(single));
     s.batch[i].k := AllocMem(kv_dim * SizeOf(single));
@@ -714,10 +716,8 @@ begin
     if Assigned(s.batch[i].xb) then FreeMem(s.batch[i].xb);
     if Assigned(s.batch[i].hb) then FreeMem(s.batch[i].hb);
     if Assigned(s.batch[i].hb2) then FreeMem(s.batch[i].hb2);
-    // Arrays are automatically freed by Pascal
-    if Assigned(s.batch[i].xq.s) then FreeMem(s.batch[i].xq.s);
-    // Arrays are automatically freed by Pascal
-    if Assigned(s.batch[i].hq.s) then FreeMem(s.batch[i].hq.s);
+    // Arrays are automatically freed by Pascal - no need to free s arrays
+    // Arrays are automatically freed by Pascal - no need to free s arrays
     if Assigned(s.batch[i].q) then FreeMem(s.batch[i].q);
     if Assigned(s.batch[i].k) then FreeMem(s.batch[i].k);
     if Assigned(s.batch[i].v) then FreeMem(s.batch[i].v);

@@ -15,9 +15,12 @@ type
   { Quantized tensor structure }
   PInt8QuantizedTensor = ^TInt8QuantizedTensor;
 
+  TInt8Array = Array of Int8;
+  TSingleArray = Array of Single;
+
   TInt8QuantizedTensor = record
-    q: Array of Int8;    // quantized values (int8)
-    s: PSingle;  // scaling factors
+    q: TInt8Array;    // quantized values (int8)
+    s: TSingleArray;  // scaling factors
     group_size: longint; // Added for quantization/dequantization
 
    // procedure Dequantize(x: PSingle; n: longint);
@@ -60,11 +63,14 @@ var
   wmax, scale, quant_value: single;
   quantized: shortint;
   current_ptr: PSingle;
+  num_groups: longint;
 begin
-  // Ensure array is properly sized
+  // Ensure arrays are properly sized
   SetLength(self.q, size);
+  num_groups := n div self.group_size;
+  SetLength(self.s, num_groups);
   
-  for group := 0 to (n div self.group_size) - 1 do
+  for group := 0 to num_groups - 1 do
   begin
     current_ptr := x + group * self.group_size;
 
@@ -75,7 +81,7 @@ begin
 
     // Calculate scaling factor
     scale := wmax / 127.0;
-    (self.s + group)^ := scale;
+    self.s[group] := scale;
 
     // Quantize values
     for i := 0 to self.group_size - 1 do
@@ -95,11 +101,14 @@ var
   QuantizedDataSize: integer;
   ScaleDataSize: integer;
   SourcePtr: PInt8;
+  ScaleSourcePtr: PSingle;
+  NumGroups: integer;
 begin
   SetLength(Data, Count);
   CurrentPtr := pbyte(DataPtr);
   QuantizedDataSize := ElementsPerTensor * SizeOf(shortint);
-  ScaleDataSize := (ElementsPerTensor div GroupSize) * SizeOf(single);
+  NumGroups := ElementsPerTensor div GroupSize;
+  ScaleDataSize := NumGroups * SizeOf(single);
 
   // Initialize each tensor in the array
   for i := 0 to Count - 1 do
@@ -111,8 +120,11 @@ begin
       Data[i].q[j] := (SourcePtr + j)^;
     Inc(CurrentPtr, QuantizedDataSize);
 
-    // Set scale data pointer for tensor i
-    Data[i].s := PSingle(CurrentPtr);
+    // Initialize scale data array for tensor i
+    SetLength(Data[i].s, NumGroups);
+    ScaleSourcePtr := PSingle(CurrentPtr);
+    for j := 0 to NumGroups - 1 do
+      Data[i].s[j] := (ScaleSourcePtr + j)^;
     Inc(CurrentPtr, ScaleDataSize);
     Data[i].group_size := GroupSize; // Set group size for each tensor
   end;
@@ -161,9 +173,9 @@ var
 begin
   for i := 0 to Length(Data) - 1 do
   begin
-    if (Length(Data[i].q) = 0) or (Data[i].s = nil) then
+    if (Length(Data[i].q) = 0) or (Length(Data[i].s) = 0) then
     begin
-      WriteLn(StdErr, 'Error: Invalid tensor at index ', i, ' - null pointers detected');
+      WriteLn(StdErr, 'Error: Invalid tensor at index ', i, ' - empty arrays detected');
       Halt(1);
     end;
   end;
@@ -558,16 +570,9 @@ var
   i, j: longint;
   val: single;
   x_base, w_base: PInt8;
-  x_scales, w_scales: PSingle;
   groups: integer;
   dot_func: function(const x_base, w_base: PShortInt): longint;
-  x_sdata: PSingle;
-  w_sdata: PSingle;
 begin
-  // Cache object fields locally
-  x_sdata := self.s;
-  w_sdata := w.s;
-
   groups := n div self.group_size;
 
   // Dispatch dot function
@@ -590,23 +595,19 @@ begin
 
     // Set up weight pointers - now using array access
     w_base := @w.q[i * n];
-    w_scales := @w_sdata[i * groups];
 
-    // Set up input quantized data and scales - now using array access
+    // Set up input quantized data - now using array access
     x_base := @self.q[0];
-    x_scales := x_sdata;
 
     // Fused loop: compute each group's dot product and apply scale immediately
     for j := 0 to groups - 1 do
     begin
-      // Compute dot product
-      val += dot_func(x_base, w_base) * (x_scales^ * w_scales^);
+      // Compute dot product and apply scaling factors from arrays
+      val += dot_func(x_base, w_base) * (self.s[j] * w.s[i * groups + j]);
 
       // Advance pointers
       Inc(x_base, self.group_size);
       Inc(w_base, self.group_size);
-      Inc(x_scales);
-      Inc(w_scales);
     end;
 
     // Store result
