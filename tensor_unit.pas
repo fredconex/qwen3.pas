@@ -263,55 +263,48 @@ begin
   end;
 end;
 
+
 {$ASMMODE INTEL}
-function Int8_DotProduct64_AVX2(const x_base, w_base: PShortInt): longint; assembler;
+function Int8_DotProduct32_AVX2(const x_base, w_base: PShortInt): longint; assembler;
 asm
-         // Use two accumulators to improve instruction-level parallelism
-         VPXOR   YMM4, YMM4, YMM4       // First accumulator
-         VPXOR   YMM5, YMM5, YMM5       // Second accumulator
+        // Zero accumulators using efficient VPXOR
+        VPXOR   YMM4, YMM4, YMM4            // YMM4 = accumulator low  (blocks 0-31)
+        VPXOR   YMM5, YMM5, YMM5            // YMM5 = accumulator high (blocks 32-63)
 
-         MOV     RAX, x_base
-         MOV     RDX, w_base
+        MOV     RAX, x_base
+        MOV     RDX, w_base
 
-         // Process in pairs for better pipeline utilization
-         // Block 1 & 2 (0-31)
-         VPMOVSXBW YMM0, [RAX]
-         VPMOVSXBW YMM1, [RDX]
-         VPMOVSXBW YMM2, [RAX + 16]
-         VPMOVSXBW YMM3, [RDX + 16]
+        // ┌─────────────────────────────────────────────────────┐
+        // │ Process first 32 int8s (offset 0–31)                │
+        // └─────────────────────────────────────────────────────┘
+        VPMOVSXBW YMM0, [RAX +  0]           // Load 32 int8 → 32 int16 (sign-extended)
+        VPMOVSXBW YMM1, [RDX +  0]
+        VPMOVSXBW YMM2, [RAX + 16]           // Second half of first 32 elements
+        VPMOVSXBW YMM3, [RDX + 16]
 
-         VPMADDWD YMM0, YMM0, YMM1
-         VPMADDWD YMM2, YMM2, YMM3
-         VPADDD  YMM4, YMM4, YMM0
-         VPADDD  YMM5, YMM5, YMM2
+        VPMADDWD YMM0, YMM0, YMM1            // Multiply-add: 16 signed word pairs → 8 dwords
+        VPMADDWD YMM2, YMM2, YMM3
+        VPADDD   YMM4, YMM4, YMM0            // Accumulate into YMM4
+        VPADDD   YMM5, YMM5, YMM2            // Keep separate for ILP
 
-         // Block 3 & 4 (32-63)
-         ADD     RAX, 32
-         ADD     RDX, 32
-         VPMOVSXBW YMM0, [RAX]
-         VPMOVSXBW YMM1, [RDX]
-         VPMOVSXBW YMM2, [RAX + 16]
-         VPMOVSXBW YMM3, [RDX + 16]
+        // ┌─────────────────────────────────────────────────────┐
+        // │ Combine final results                               │
+        // └─────────────────────────────────────────────────────┘
+        VPADDD  YMM4, YMM4, YMM5              // Merge both accumulators → YMM4[8 dwords]
 
-         VPMADDWD YMM0, YMM0, YMM1
-         VPMADDWD YMM2, YMM2, YMM3
-         VPADDD  YMM4, YMM4, YMM0
-         VPADDD  YMM5, YMM5, YMM2
+        // Horizontal sum: reduce 8 dwords to scalar
+        VEXTRACTI128 XMM0, YMM4, 1             // Get upper 128 bits
+        VPADDD  XMM4, XMM4, XMM0               // Sum all 8 → 4 dwords in XMM4
+        VPHADDD XMM4, XMM4, XMM4               // → [a+b, c+d, e+f, g+h] → [a+b+c+d, e+f+g+h, ...]
+        VPHADDD XMM4, XMM4, XMM4               // → [total, ?, ?, ?]
 
-         // Combine accumulators
-         VPADDD  YMM4, YMM4, YMM5
+        VMOVD   EAX, XMM4                      // Extract lowest dword = total sum
 
-         // Optimized horizontal sum
-         VEXTRACTI128 XMM0, YMM4, 1
-         VPADDD  XMM4, XMM4, XMM0
-         VPHADDD XMM4, XMM4, XMM4
-         VPHADDD XMM4, XMM4, XMM4
-         VMOVD   EAX, XMM4
-         VZEROUPPER
+        VZEROUPPER                             // Avoid AVX/SSE transition penalty
 end;
 
 {$ASMMODE INTEL}
-function Int8_DotProduct64_AVX2_Aligned(const x_base, w_base: PShortInt): longint; assembler;
+function Int8_DotProduct64_AVX2(const x_base, w_base: PShortInt): longint; assembler;
 asm
         // Zero accumulators using efficient VPXOR
         VPXOR   YMM4, YMM4, YMM4            // YMM4 = accumulator low  (blocks 0-31)
@@ -578,7 +571,8 @@ begin
 
   // Dispatch dot function
   case self.group_size of
-    64:  dot_func := @Int8_DotProduct64_AVX2_Aligned;
+    32:  dot_func := @Int8_DotProduct32_AVX2;
+    64:  dot_func := @Int8_DotProduct64_AVX2;
     128: dot_func := @Int8_DotProduct128_AVX2;
     256: dot_func := @Int8_DotProduct256_AVX2;
   else
