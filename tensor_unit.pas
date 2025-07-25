@@ -12,11 +12,12 @@ uses
   Classes;
 
 type
-  { Quantized tensor structure }
-  PInt8QuantizedTensor = ^TInt8QuantizedTensor;
-
+  { Array types }
   TInt8Array = Array of Int8;
   TSingleArray = Array of Single;
+
+  { Quantized tensor structure }
+  PInt8QuantizedTensor = ^TInt8QuantizedTensor;
 
   TInt8QuantizedTensor = record
     q: TInt8Array;    // quantized values (int8)
@@ -24,8 +25,8 @@ type
     group_size: longint; // Added for quantization/dequantization
 
    // procedure Dequantize(x: PSingle; n: longint);
-    procedure Quantize(x: PSingle; n, size: longint);
-    procedure MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
+    procedure Quantize(const x: TSingleArray; n, size: longint);
+    procedure MatMul(var xout: TSingleArray; const w: TInt8QuantizedTensor; n, d: longint);
   end;
 
   { Array of quantized tensors with utility methods }
@@ -57,13 +58,13 @@ begin
     (x + i)^ := (self.q + i)^ * (self.s + (i div self.group_size))^;
 end; }
 
-procedure TInt8QuantizedTensor.Quantize(x: PSingle; n, size: longint);
+procedure TInt8QuantizedTensor.Quantize(const x: TSingleArray; n, size: longint);
 var
   group, i: longint;
   wmax, scale, quant_value: single;
   quantized: shortint;
-  current_ptr: PSingle;
   num_groups: longint;
+  base_idx: longint;
 begin
   // Ensure arrays are properly sized
   SetLength(self.q, size);
@@ -72,12 +73,12 @@ begin
   
   for group := 0 to num_groups - 1 do
   begin
-    current_ptr := x + group * self.group_size;
+    base_idx := group * self.group_size;
 
     // Find max absolute value
     wmax := 0;
     for i := 0 to self.group_size - 1 do
-      wmax := Max(wmax, Abs((current_ptr + i)^));
+      wmax := Max(wmax, Abs(x[base_idx + i]));
 
     // Calculate scaling factor
     scale := wmax / 127.0;
@@ -86,7 +87,7 @@ begin
     // Quantize values
     for i := 0 to self.group_size - 1 do
     begin
-      quant_value := (current_ptr + i)^ / scale;
+      quant_value := x[base_idx + i] / scale;
       quantized := Round(quant_value);
       self.q[group * self.group_size + i] := quantized;
     end;
@@ -565,7 +566,7 @@ asm
 end;
 
 
-procedure TInt8QuantizedTensor.MatMul(xout: PSingle; const w: TInt8QuantizedTensor; n, d: longint);
+procedure TInt8QuantizedTensor.MatMul(var xout: TSingleArray; const w: TInt8QuantizedTensor; n, d: longint);
 var
   i, j: longint;
   val: single;
@@ -610,9 +611,8 @@ begin
       Inc(w_base, self.group_size);
     end;
 
-    // Store result
-    xout^ := val;
-    Inc(xout);
+    // Store result in array
+    xout[i] := val;
   end;
 end;
 

@@ -19,6 +19,9 @@ uses
   Tensor_Unit;
 
 type
+  { Array types }
+  TSingleArray = Array of Single;
+
   { Configuration structure }
   TConfig = record
     magic_number: longint;
@@ -56,17 +59,17 @@ type
 
   { Run state }
   TBatchState = record
-    x: PSingle;      // [dim]
-    xb: PSingle;     // [all_heads_dim]
-    hb: PSingle;     // [hidden_dim]
-    hb2: PSingle;    // [hidden_dim]
+    x: TSingleArray;      // [dim]
+    xb: TSingleArray;     // [all_heads_dim]
+    hb: TSingleArray;     // [hidden_dim]
+    hb2: TSingleArray;    // [hidden_dim]
     xq: TInt8QuantizedTensor;
     hq: TInt8QuantizedTensor;
-    q: PSingle;      // [all_heads_dim]
-    k: PSingle;      // [kv_dim]
-    v: PSingle;      // [kv_dim]
-    att: PSingle;    // [n_heads * seq_len]
-    logits: PSingle; // [vocab_size]
+    q: TSingleArray;      // [all_heads_dim]
+    k: TSingleArray;      // [kv_dim]
+    v: TSingleArray;      // [kv_dim]
+    att: TSingleArray;    // [n_heads * seq_len]
+    logits: TSingleArray; // [vocab_size]
   end;
 
   TRunState = record
@@ -88,14 +91,14 @@ type
     procedure LoadFromFile(checkpoint: string; ctx_length: longint);
     function GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
 
-    procedure ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim, pos: longint);
+    procedure ApplyRotaryEmbeddings(var arr: TSingleArray; const head_dim, pos: longint);
     procedure ProcessAttentionLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, pos, batch_idx: longint);
     procedure ProcessFFNLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; const l, batch_idx: longint);
-    procedure ApplyResidualConnection(const x, xb: PSingle; const dim: longint);
+    procedure ApplyResidualConnection(var x, xb: TSingleArray; const dim: longint);
     procedure ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; batch_idx: longint);
-    procedure RMSNorm(const o, x, weight: PSingle; Size: longint);
+    procedure RMSNorm(var o, x: TSingleArray; const weight: PSingle; Size: longint);
     function Sigmoid(const x: single): single;
-    procedure SwiGLU(var hb, hb2: PSingle; hidden_dim: longint);
+    procedure SwiGLU(var hb, hb2: TSingleArray; hidden_dim: longint);
     // --- Begin deduplication helpers ---
     procedure DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
     procedure DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
@@ -299,7 +302,7 @@ begin
   // Process final layer
   self.DoFinalLayer(s, w, p, 0);
 
-  Result := s^.batch[0].logits;
+  Result := @s^.batch[0].logits[0];
 end;
 
 function TTransformer.GenerateFromTokens(var tokenizer: TTokenizer; var sampler: TSampler; prompt_tokens: PLongInt; num_prompt_tokens: longint; start_pos: longint; output_prompt: boolean): longint;
@@ -524,17 +527,17 @@ begin
 end;
 
 // --- Begin TTransformer helper method implementations ---
-procedure TTransformer.RMSNorm(const o, x, weight: PSingle; Size: longint);
+procedure TTransformer.RMSNorm(var o, x: TSingleArray; const weight: PSingle; Size: longint);
 var
   ss: single;
   j: longint;
 begin
   ss := 0;
   for j := 0 to Size - 1 do
-    ss += (x + j)^ ** 2;
+    ss += x[j] * x[j];
   ss := 1.0 / Sqrt((ss / Size) + 1e-6);
   for j := 0 to Size - 1 do
-    (o + j)^ := (weight + j)^ * (ss * (x + j)^);
+    o[j] := (weight + j)^ * (ss * x[j]);
 end;
 
 function TTransformer.Sigmoid(const x: single): single;
@@ -542,27 +545,23 @@ begin
   Result := 1.0 / (1.0 + Exp(-x));
 end;
 
-procedure TTransformer.SwiGLU(var hb, hb2: PSingle; hidden_dim: longint);
+procedure TTransformer.SwiGLU(var hb, hb2: TSingleArray; hidden_dim: longint);
 var
   i: longint;
 begin
   for i := 0 to hidden_dim - 1 do
-    (hb + i)^ := (hb + i)^ * self.Sigmoid((hb + i)^) * (hb2 + i)^;
+    hb[i] := hb[i] * self.Sigmoid(hb[i]) * hb2[i];
 end;
 
-procedure TTransformer.ApplyRotaryEmbeddings(const ptr: PSingle; const head_dim, pos: longint);
+procedure TTransformer.ApplyRotaryEmbeddings(var arr: TSingleArray; const head_dim, pos: longint);
 var
   j: longint;
   pfreq, cos_freq, sin_freq, x_val, y_val: single;
   half_dim: longint;
   freq_base: single;
-  x_ptr, y_ptr: PSingle;
 begin
   half_dim := head_dim shr 1; // Fast division by 2
   freq_base := 1.0 / Power(1e6, 1.0 / half_dim); // Precompute base
-
-  x_ptr := ptr;
-  y_ptr := ptr + half_dim;
 
   for j := 0 to half_dim - 1 do
   begin
@@ -575,14 +574,11 @@ begin
     cos_freq := Cos(pfreq);
     sin_freq := Sin(pfreq);
 
-    x_val := x_ptr^;
-    y_val := y_ptr^;
+    x_val := arr[j];
+    y_val := arr[j + half_dim];
 
-    x_ptr^ := x_val * cos_freq - y_val * sin_freq;
-    y_ptr^ := x_val * sin_freq + y_val * cos_freq;
-
-    Inc(x_ptr);
-    Inc(y_ptr);
+    arr[j] := x_val * cos_freq - y_val * sin_freq;
+    arr[j + half_dim] := x_val * sin_freq + y_val * cos_freq;
   end;
 end;
 
@@ -593,6 +589,7 @@ var
   i, h, t: longint;
   att_ptr, q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
   scale: single;
+  temp_head_array: TSingleArray;
 begin
   scale := 1.0 / Sqrt(p.head_dim);
   kv_dim := p.n_kv_heads * p.head_dim;
@@ -609,40 +606,56 @@ begin
   // Q-RMSNorm + rotate each query head
   for h := 0 to p.n_heads - 1 do
   begin
-    q_ptr := s.batch[batch_idx].q + h * p.head_dim;
-    self.RMSNorm(q_ptr, q_ptr, w.q_norm_weights + l * p.head_dim, p.head_dim);
-    self.ApplyRotaryEmbeddings(q_ptr, p.head_dim, pos);
+    // Create a slice of the q array for this head
+    SetLength(temp_head_array, p.head_dim);
+    for i := 0 to p.head_dim - 1 do
+      temp_head_array[i] := s.batch[batch_idx].q[h * p.head_dim + i];
+    self.RMSNorm(temp_head_array, temp_head_array, w.q_norm_weights + l * p.head_dim, p.head_dim);
+    self.ApplyRotaryEmbeddings(temp_head_array, p.head_dim, pos);
+    // Copy back to the main array
+    for i := 0 to p.head_dim - 1 do
+      s.batch[batch_idx].q[h * p.head_dim + i] := temp_head_array[i];
   end;
   // K-RMSNorm + rotate each key head
   for h := 0 to p.n_kv_heads - 1 do
   begin
-    k_ptr := s.batch[batch_idx].k + h * p.head_dim;
-    self.RMSNorm(k_ptr, k_ptr, w.k_norm_weights + l * p.head_dim, p.head_dim);
-    self.ApplyRotaryEmbeddings(k_ptr, p.head_dim, pos);
+    // Create a slice of the k array for this head
+    SetLength(temp_head_array, p.head_dim);
+    for i := 0 to p.head_dim - 1 do
+      temp_head_array[i] := s.batch[batch_idx].k[h * p.head_dim + i];
+    self.RMSNorm(temp_head_array, temp_head_array, w.k_norm_weights + l * p.head_dim, p.head_dim);
+    self.ApplyRotaryEmbeddings(temp_head_array, p.head_dim, pos);
+    // Copy back to the main array
+    for i := 0 to p.head_dim - 1 do
+      s.batch[batch_idx].k[h * p.head_dim + i] := temp_head_array[i];
   end;
   // NOW write K/V to cache for this position (after K RMSNorm+RoPE)
-  Move(s.batch[batch_idx].k^, (s.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
-  Move(s.batch[batch_idx].v^, (s.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+  for i := 0 to kv_dim - 1 do
+  begin
+    (s.key_cache + loff + pos * kv_dim + i)^ := s.batch[batch_idx].k[i];
+    (s.value_cache + loff + pos * kv_dim + i)^ := s.batch[batch_idx].v[i];
+  end;
   // Multihead attention - optimized
   for h := 0 to p.n_heads - 1 do
   begin
-    q_ptr := s.batch[batch_idx].q + h * p.head_dim;
-    att_ptr := s.batch[batch_idx].att + h * p.seq_len;
+    q_ptr := @s.batch[batch_idx].q[h * p.head_dim];
+    att_ptr := @s.batch[batch_idx].att[h * p.seq_len];
     for t := 0 to pos do
     begin
       k_ptr := s.key_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
       (att_ptr + t)^ := DotProduct_Hybrid(q_ptr, k_ptr, p.head_dim) * scale;
     end;
     Softmax(att_ptr, pos + 1);
-    xb_ptr := s.batch[batch_idx].xb + h * p.head_dim;
-    FillDWord(xb_ptr^, p.head_dim, 0);
+    xb_ptr := @s.batch[batch_idx].xb[h * p.head_dim];
+    for i := 0 to p.head_dim - 1 do
+      s.batch[batch_idx].xb[h * p.head_dim + i] := 0;
     for t := 0 to pos do
     begin
       v_ptr := s.value_cache + loff + t * kv_dim + (h div kv_mul) * p.head_dim;
 
       // Apply Scalar
       for i := 0 to p.head_dim - 1 do
-        (xb_ptr + i)^ := (xb_ptr + i)^ + (att_ptr + t)^ * (v_ptr + i)^;
+        s.batch[batch_idx].xb[h * p.head_dim + i] := s.batch[batch_idx].xb[h * p.head_dim + i] + (att_ptr + t)^ * (v_ptr + i)^;
     end;
   end;
   // Final attention matmul
@@ -661,12 +674,12 @@ begin
   s.batch[batch_idx].hq.MatMul(s.batch[batch_idx].xb, w.w2.GetTensor(l), p.hidden_dim, p.dim);
 end;
 
-procedure TTransformer.ApplyResidualConnection(const x, xb: PSingle; const dim: longint);
+procedure TTransformer.ApplyResidualConnection(var x, xb: TSingleArray; const dim: longint);
 var
   i: longint;
 begin
   for i := 0 to dim - 1 do
-    (x + i)^ := (x + i)^ + (xb + i)^;
+    x[i] := x[i] + xb[i];
 end;
 
 procedure TTransformer.ProcessFinalLayer(var s: TRunState; const w: TTransformerWeights; const p: TConfig; batch_idx: longint);
@@ -686,21 +699,21 @@ begin
   SetLength(s.batch, 512);
   for i := 0 to Length(s.batch) - 1 do
   begin
-    s.batch[i].x := AllocMem(p.dim * SizeOf(single));
-    s.batch[i].xb := AllocMem(all_heads_dim * SizeOf(single));
-    s.batch[i].hb := AllocMem(p.hidden_dim * SizeOf(single));
-    s.batch[i].hb2 := AllocMem(p.hidden_dim * SizeOf(single));
+    SetLength(s.batch[i].x, p.dim);
+    SetLength(s.batch[i].xb, all_heads_dim);
+    SetLength(s.batch[i].hb, p.hidden_dim);
+    SetLength(s.batch[i].hb2, p.hidden_dim);
     SetLength(s.batch[i].xq.q, all_heads_dim);
     SetLength(s.batch[i].xq.s, all_heads_dim div p.group_size);
     s.batch[i].xq.group_size := p.group_size;
     SetLength(s.batch[i].hq.q, p.hidden_dim);
     SetLength(s.batch[i].hq.s, p.hidden_dim div p.group_size);
     s.batch[i].hq.group_size := p.group_size;
-    s.batch[i].q := AllocMem(all_heads_dim * SizeOf(single));
-    s.batch[i].k := AllocMem(kv_dim * SizeOf(single));
-    s.batch[i].v := AllocMem(kv_dim * SizeOf(single));
-    s.batch[i].att := AllocMem(p.n_heads * p.seq_len * SizeOf(single));
-    s.batch[i].logits := AllocMem(p.vocab_size * SizeOf(single));
+    SetLength(s.batch[i].q, all_heads_dim);
+    SetLength(s.batch[i].k, kv_dim);
+    SetLength(s.batch[i].v, kv_dim);
+    SetLength(s.batch[i].att, p.n_heads * p.seq_len);
+    SetLength(s.batch[i].logits, p.vocab_size);
   end;
   s.key_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
   s.value_cache := AllocMem(p.n_layers * QWord(p.seq_len) * kv_dim * SizeOf(single));
@@ -710,20 +723,8 @@ procedure TTransformer.FreeRunState(var s: TRunState);
 var
   i: integer;
 begin
-  for i := 0 to High(s.batch) do
-  begin
-    if Assigned(s.batch[i].x) then FreeMem(s.batch[i].x);
-    if Assigned(s.batch[i].xb) then FreeMem(s.batch[i].xb);
-    if Assigned(s.batch[i].hb) then FreeMem(s.batch[i].hb);
-    if Assigned(s.batch[i].hb2) then FreeMem(s.batch[i].hb2);
-    // Arrays are automatically freed by Pascal - no need to free s arrays
-    // Arrays are automatically freed by Pascal - no need to free s arrays
-    if Assigned(s.batch[i].q) then FreeMem(s.batch[i].q);
-    if Assigned(s.batch[i].k) then FreeMem(s.batch[i].k);
-    if Assigned(s.batch[i].v) then FreeMem(s.batch[i].v);
-    if Assigned(s.batch[i].att) then FreeMem(s.batch[i].att);
-    if Assigned(s.batch[i].logits) then FreeMem(s.batch[i].logits);
-  end;
+  // Arrays in TBatchState are automatically freed by Pascal
+  // Only need to free the cache arrays that are still PSingle
   if Assigned(s.key_cache) then FreeMem(s.key_cache);
   if Assigned(s.value_cache) then FreeMem(s.value_cache);
 end;
@@ -733,10 +734,11 @@ var
   p: ^TConfig;
   w: ^TTransformerWeights;
   s: ^TRunState;
-  l, h, i: longint;
+  l, h, i, j: longint;
   k_ptr: PSingle;
   loff: integer;
   kv_dim: integer;
+  temp_head_array: TSingleArray;
   // For first pass
   pos: longint;
   // For second pass
@@ -785,17 +787,26 @@ begin
       s^.batch[i].xq.MatMul(s^.batch[i].v, w^.wv.GetTensor(l), p^.dim, p^.n_kv_heads * p^.head_dim);
       // Q/K RMSNorm + RoPE
       // Q not needed for cache, but K is
-      for  h := 0 to p^.n_kv_heads - 1 do
+      for h := 0 to p^.n_kv_heads - 1 do
       begin
-        k_ptr := s^.batch[i].k + h * p^.head_dim;
-        self.RMSNorm(k_ptr, k_ptr, w^.k_norm_weights + l * p^.head_dim, p^.head_dim);
-        self.ApplyRotaryEmbeddings(k_ptr, p^.head_dim, pos);
+        // Create a slice of the k array for this head
+        SetLength(temp_head_array, p^.head_dim);
+        for j := 0 to p^.head_dim - 1 do
+          temp_head_array[j] := s^.batch[i].k[h * p^.head_dim + j];
+        self.RMSNorm(temp_head_array, temp_head_array, w^.k_norm_weights + l * p^.head_dim, p^.head_dim);
+        self.ApplyRotaryEmbeddings(temp_head_array, p^.head_dim, pos);
+        // Copy back to the main array
+        for j := 0 to p^.head_dim - 1 do
+          s^.batch[i].k[h * p^.head_dim + j] := temp_head_array[j];
       end;
       // Write K/V to cache for this position
       kv_dim := p^.n_kv_heads * p^.head_dim;
       loff := l * QWord(p^.seq_len) * kv_dim;
-      Move(s^.batch[i].k^, (s^.key_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
-      Move(s^.batch[i].v^, (s^.value_cache + loff + pos * kv_dim)^, kv_dim * SizeOf(single));
+      for j := 0 to kv_dim - 1 do
+      begin
+        (s^.key_cache + loff + pos * kv_dim + j)^ := s^.batch[i].k[j];
+        (s^.value_cache + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
     end;
     // Second pass: attention and FFN (now cache is fully populated)
     ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
@@ -805,8 +816,544 @@ begin
 end;
 
 procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
 begin
-  Move((w^.token_embedding_table + token * p^.dim)^, s^.batch[batch_idx].x^, p^.dim * SizeOf(single));
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
+end;
+
+procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
+begin
+  // Attention
+  self.ProcessAttentionLayer(s^, w^, p^, l, pos, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+  // FFN
+  self.ProcessFFNLayer(s^, w^, p^, l, batch_idx);
+  // Residual connection
+  self.ApplyResidualConnection(s^.batch[batch_idx].x, s^.batch[batch_idx].xb, p^.dim);
+end;
+
+procedure TTransformer.DoFinalLayer(s: PRunState; w: PTransformerWeights; p: PConfig; batch_idx: integer);
+begin
+  self.ProcessFinalLayer(s^, w^, p^, batch_idx);
+end;
+
+end.e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;e + loff + pos * kv_dim + j)^ := s^.batch[i].v[j];
+      end;
+    end;
+    // Second pass: attention and FFN (now cache is fully populated)
+    ProcThreadPool.DoParallelNested(@BatchAttentionAndFFN, 0, batch_count - 1, nil);
+  end;
+  // Final layer for all batch elements in parallel
+  ProcThreadPool.DoParallelNested(@BatchFinalLayerProc, 0, batch_count - 1, nil);
+end;
+
+procedure TTransformer.DoEmbeddingCopy(s: PRunState; w: PTransformerWeights; p: PConfig; token, batch_idx: integer);
+var
+  i: integer;
+begin
+  for i := 0 to p^.dim - 1 do
+    s^.batch[batch_idx].x[i] := (w^.token_embedding_table + token * p^.dim + i)^;
 end;
 
 procedure TTransformer.DoLayerPass(s: PRunState; w: PTransformerWeights; p: PConfig; l, pos, batch_idx: integer);
