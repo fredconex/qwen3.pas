@@ -105,8 +105,6 @@ type
     config: TConfig;
     weights: TTransformerWeights;
     state: TRunState;
-    Data: Pointer;
-    file_size: int64;
 
     constructor Create(checkpoint_path: string; ctx_length: longint);
     destructor Destroy; override;
@@ -120,106 +118,120 @@ implementation
 
 
 
-{ Streamlined model loading - consolidates all loading steps }
+{ Optimized model loading - loads data directly into tensors from file }
 procedure TTransformer.LoadModel(checkpoint_path: string; ctx_length: longint);
 var
   fs: TFileStream;
-  float_ptr: PSingle;
-  byte_ptr: PByte;
   token_table_size, i: integer;
   all_heads_dim, kv_dim: longint;
   
   procedure LoadFloatWeights(var weight_array: TSingleArray; count: integer);
-  var j: integer;
   begin
     SetLength(weight_array, count);
-    for j := 0 to count - 1 do
-    begin
-      weight_array[j] := float_ptr^;
-      Inc(float_ptr);
-    end;
+    fs.ReadBuffer(weight_array[0], count * SizeOf(single));
   end;
 
   procedure LoadQuantizedTensor(var tensor: PInt8QuantizedTensor; size: integer);
+  var scale_count: integer;
   begin
     New(tensor);
     SetLength(tensor^.q, size);
-    Move(byte_ptr^, tensor^.q[0], size * SizeOf(shortint));
-    Inc(byte_ptr, size * SizeOf(shortint));
-    SetLength(tensor^.s, size div config.group_size);
-    Move(byte_ptr^, tensor^.s[0], (size div config.group_size) * SizeOf(single));
-    Inc(byte_ptr, (size div config.group_size) * SizeOf(single));
+    fs.ReadBuffer(tensor^.q[0], size * SizeOf(shortint));
+    scale_count := size div config.group_size;
+    SetLength(tensor^.s, scale_count);
+    fs.ReadBuffer(tensor^.s[0], scale_count * SizeOf(single));
     tensor^.group_size := config.group_size;
+  end;
+
+  procedure LoadQuantizedTensorArray(var tensor_array: TInt8QuantizedTensorArray; layer_count, tensor_size: integer);
+  var 
+    l: integer;
+    data_size, scale_size: integer;
+  begin
+    // Calculate sizes
+    data_size := tensor_size * SizeOf(shortint);
+    scale_size := (tensor_size div config.group_size) * SizeOf(single);
+    
+    // Initialize the tensor array structure
+    SetLength(tensor_array.Data, layer_count);
+    
+    // Load each tensor directly from file
+    for l := 0 to layer_count - 1 do
+    begin
+      // Load quantized data
+      SetLength(tensor_array.Data[l].q, tensor_size);
+      fs.ReadBuffer(tensor_array.Data[l].q[0], data_size);
+      
+      // Load scale data
+      SetLength(tensor_array.Data[l].s, tensor_size div config.group_size);
+      fs.ReadBuffer(tensor_array.Data[l].s[0], scale_size);
+      
+      // Set group size
+      tensor_array.Data[l].group_size := config.group_size;
+    end;
   end;
 
 begin
   WriteLn('Loading model: ', checkpoint_path);
   
-  // Step 1: Load file into memory
   fs := TFileStream.Create(checkpoint_path, fmOpenRead);
   try
-    file_size := fs.Size;
-    GetMem(Data, file_size);
-    fs.ReadBuffer(Data^, file_size);
+    // Step 1: Load and validate configuration
+    fs.ReadBuffer(config, SizeOf(TConfig));
+    if config.magic_number <> $616a6331 then
+    begin
+      WriteLn(StdErr, 'Error: Invalid checkpoint format');
+      Halt(1);
+    end;
+    if config.version <> 1 then
+    begin
+      WriteLn(StdErr, 'Error: Unsupported version ', config.version);
+      Halt(1);
+    end;
+    
+    // Apply context length override
+    if (ctx_length > 0) and (ctx_length <= config.seq_len) then
+      config.seq_len := ctx_length;
+    
+    // Step 2: Skip to weights section (256-byte header)
+    fs.Seek(256, soFromBeginning);
+    
+    // Step 3: Load normalization weights directly from file
+    LoadFloatWeights(weights.rms_att_weight, config.n_layers * config.dim);
+    LoadFloatWeights(weights.rms_ffn_weight, config.n_layers * config.dim);
+    LoadFloatWeights(weights.rms_final_weight, config.dim);
+    LoadFloatWeights(weights.q_norm_weights, config.n_layers * config.head_dim);
+    LoadFloatWeights(weights.k_norm_weights, config.n_layers * config.head_dim);
+
+    // Step 4: Load quantized tensors directly from file
+    token_table_size := config.vocab_size * config.dim;
+    LoadQuantizedTensor(weights.q_tokens, token_table_size);
+    
+    // Dequantize token embeddings for fast access
+    SetLength(weights.token_embedding_table, token_table_size);
+    for i := 0 to token_table_size - 1 do
+      weights.token_embedding_table[i] := weights.q_tokens^.q[i] * weights.q_tokens^.s[i div config.group_size];
+
+    // Load attention and FFN weight arrays
+    LoadQuantizedTensorArray(weights.wq, config.n_layers, config.dim * (config.n_heads * config.head_dim));
+    LoadQuantizedTensorArray(weights.wk, config.n_layers, config.dim * (config.n_kv_heads * config.head_dim));
+    LoadQuantizedTensorArray(weights.wv, config.n_layers, config.dim * (config.n_kv_heads * config.head_dim));
+    LoadQuantizedTensorArray(weights.wo, config.n_layers, (config.n_heads * config.head_dim) * config.dim);
+    LoadQuantizedTensorArray(weights.w1, config.n_layers, config.dim * config.hidden_dim);
+    LoadQuantizedTensorArray(weights.w2, config.n_layers, config.hidden_dim * config.dim);
+    LoadQuantizedTensorArray(weights.w3, config.n_layers, config.dim * config.hidden_dim);
+
+    // Load classifier weights
+    if config.shared_classifier = 1 then
+      weights.wcls := weights.q_tokens
+    else
+      LoadQuantizedTensor(weights.wcls, config.dim * config.vocab_size);
+    
   finally
     fs.Free;
   end;
   
-  // Step 2: Load and validate configuration
-  Move(Data^, config, SizeOf(TConfig));
-  if config.magic_number <> $616a6331 then
-  begin
-    WriteLn(StdErr, 'Error: Invalid checkpoint format');
-    Halt(1);
-  end;
-  if config.version <> 1 then
-  begin
-    WriteLn(StdErr, 'Error: Unsupported version ', config.version);
-    Halt(1);
-  end;
-  
-  // Apply context length override
-  if (ctx_length > 0) and (ctx_length <= config.seq_len) then
-    config.seq_len := ctx_length;
-  
-  // Step 3: Load weights (skip 256-byte header)
-  float_ptr := PSingle(PChar(Data) + 256);
-  
-  // Load normalization weights
-  LoadFloatWeights(weights.rms_att_weight, config.n_layers * config.dim);
-  LoadFloatWeights(weights.rms_ffn_weight, config.n_layers * config.dim);
-  LoadFloatWeights(weights.rms_final_weight, config.dim);
-  LoadFloatWeights(weights.q_norm_weights, config.n_layers * config.head_dim);
-  LoadFloatWeights(weights.k_norm_weights, config.n_layers * config.head_dim);
-
-  // Switch to quantized data
-  byte_ptr := PByte(float_ptr);
-
-  // Load token embeddings
-  token_table_size := config.vocab_size * config.dim;
-  LoadQuantizedTensor(weights.q_tokens, token_table_size);
-  
-  // Dequantize token embeddings for fast access
-  SetLength(weights.token_embedding_table, token_table_size);
-  for i := 0 to token_table_size - 1 do
-    weights.token_embedding_table[i] := weights.q_tokens^.q[i] * weights.q_tokens^.s[i div config.group_size];
-
-  // Load attention and FFN weights
-  weights.wq.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * (config.n_heads * config.head_dim), config.group_size);
-  weights.wk.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * (config.n_kv_heads * config.head_dim), config.group_size);
-  weights.wv.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * (config.n_kv_heads * config.head_dim), config.group_size);
-  weights.wo.Initialize(config.n_layers, Pointer(byte_ptr), (config.n_heads * config.head_dim) * config.dim, config.group_size);
-  weights.w1.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * config.hidden_dim, config.group_size);
-  weights.w2.Initialize(config.n_layers, Pointer(byte_ptr), config.hidden_dim * config.dim, config.group_size);
-  weights.w3.Initialize(config.n_layers, Pointer(byte_ptr), config.dim * config.hidden_dim, config.group_size);
-
-  // Load classifier weights
-  if config.shared_classifier = 1 then
-    weights.wcls := weights.q_tokens
-  else
-    LoadQuantizedTensor(weights.wcls, config.dim * config.vocab_size);
-  
-  // Step 4: Initialize runtime state
+  // Step 5: Initialize runtime state (no file I/O needed)
   all_heads_dim := config.n_heads * config.head_dim;
   kv_dim := config.n_kv_heads * config.head_dim;
   
@@ -245,7 +257,7 @@ begin
   
   SetLength(state.key_cache, config.n_layers * QWord(config.seq_len) * kv_dim);
   SetLength(state.value_cache, config.n_layers * QWord(config.seq_len) * kv_dim);
-  
+
   WriteLn('Model loaded successfully');
 end;
 
@@ -258,12 +270,8 @@ end;
 destructor TTransformer.Destroy;
 begin
   Dispose(self.weights.q_tokens);
-  // token_embedding_table is now TSingleArray and automatically freed
-  // Arrays are automatically freed by Pascal
   if self.weights.wcls <> self.weights.q_tokens then
     Dispose(self.weights.wcls);
-  FreeMem(self.Data);
-  //FreeRunState(self.state);
   inherited Destroy;
 end;
 
@@ -575,7 +583,7 @@ var
   i, h, t: longint;
   att_ptr, q_ptr, k_ptr, v_ptr, xb_ptr: PSingle;
   scale: single;
-  temp_head_array: TSingleArray;
+  temp_head_array: TSingleArray = ();
 begin
   scale := 1.0 / Sqrt(p.head_dim);
   kv_dim := p.n_kv_heads * p.head_dim;
