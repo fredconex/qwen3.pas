@@ -71,7 +71,7 @@ def quantize_q80(w, group_size):
     return int8val, scale, maxerr
 
 
-def model_export(model, filepath, group_size=256):
+def model_export(model, filepath, group_size=64):
     """
     Export the model weights in Q8_0 into .bin file to be read from C.
     That is:
